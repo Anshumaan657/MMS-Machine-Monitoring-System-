@@ -1,0 +1,21 @@
+
+# Company/client data
+*.xls
+*.xlsx
+public/sample-summary.json
+
+# Local build files
+node_modules/
+dist/
+.next/
+.wrangler/
+.DS_Store
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Local Sites configuration
+.openai/
+.vinext/
