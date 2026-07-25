@@ -1,12 +1,26 @@
 "use client";
 
-import { ChangeEvent, ReactNode, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as XLSX from "xlsx";
 import {
+  ExcelMmsDataSource,
+  type MmsDataSource,
+} from "./mms-data-source";
+import {
   getMmsFilterOptions,
-  parseMmsCanonicalFile,
   queryMmsAnalytics,
 } from "./mms";
+import {
+  createInitialMmsSyncState,
+  MmsSynchronizationEngine,
+} from "./synchronization-engine";
 import type {
   CanonicalMmsData,
   DowntimeAggregate,
@@ -14,6 +28,11 @@ import type {
   OeeAggregate,
   ProductionQueryAggregate,
 } from "./mms";
+import type {
+  MmsSyncChanges,
+  MmsSyncLogEntry,
+  MmsSyncState,
+} from "./synchronization-engine";
 
 export type DashboardTab =
   | "overview"
@@ -58,6 +77,30 @@ type KpiCardProps = {
   children?: ReactNode;
 };
 
+type BrowserFileHandle = {
+  name: string;
+  getFile(): Promise<File>;
+};
+
+type WorkbookPickerWindow = Window & {
+  showOpenFilePicker?: (options?: {
+    multiple?: boolean;
+    types?: Array<{
+      description: string;
+      accept: Record<string, string[]>;
+    }>;
+  }) => Promise<BrowserFileHandle[]>;
+};
+
+type SyncNotice = {
+  id: number;
+  message: string;
+};
+
+const SYNC_LOG_STORAGE_KEY = "mms-intelligence-sync-logs-v1";
+const SYNC_POLL_INTERVAL_MS = 60_000;
+const SYNC_STALE_AFTER_MS = 5 * 60_000;
+
 const NAVIGATION: NavigationItem[] = [
   { id: "overview", label: "Overview", shortLabel: "OV", icon: "⌁" },
   { id: "downtime", label: "Downtime", shortLabel: "DT", icon: "↯" },
@@ -93,6 +136,33 @@ function readableDate(value: string | null): string {
     month: "short",
     year: "numeric",
   }).format(new Date(`${value}T00:00:00`));
+}
+
+function readableTimestamp(value: string | null): string {
+  if (!value) return "Not yet";
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
+}
+
+function readStoredSyncLogs(): MmsSyncLogEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(SYNC_LOG_STORAGE_KEY) ?? "[]",
+    );
+    return Array.isArray(parsed) ? parsed.slice(-250) : [];
+  } catch {
+    return [];
+  }
+}
+
+function syncNoticeMessage(changes: MmsSyncChanges): string {
+  return `${changes.added} new, ${changes.modified} modified and ${changes.removed} removed records synchronized.`;
 }
 
 function byLabel<T extends { label: string }>(items: T[]): Map<string, T> {
@@ -192,7 +262,8 @@ function EmptyState({
       <p>
         Production, Availability, Performance, downtime, financial loss,
         quality records and data-quality findings are recalculated locally from
-        the selected workbook.
+        the selected workbook. Supported browsers can continue monitoring that
+        workbook for changes every minute.
       </p>
       {error ? <div className="inline-alert">{error}</div> : null}
       <button
@@ -200,9 +271,12 @@ function EmptyState({
         onClick={onUpload}
         disabled={processing}
       >
-        {processing ? "Processing workbook…" : "Import workbook"}
+        {processing ? "Processing workbook…" : "Connect workbook"}
       </button>
-      <small>Excel analysis happens locally in your browser.</small>
+      <small>
+        Excel analysis happens locally. Manual upload remains available when
+        live file access is unsupported.
+      </small>
       <input
         ref={inputRef}
         className="sr-only"
@@ -308,7 +382,41 @@ export default function DashboardPage() {
     "All",
   );
   const [selectedMachineName, setSelectedMachineName] = useState("");
+  const [syncState, setSyncState] = useState<MmsSyncState>(() =>
+    createInitialMmsSyncState(),
+  );
+  const [syncNotice, setSyncNotice] = useState<SyncNotice | null>(null);
+  const [sourceMode, setSourceMode] = useState<
+    "live-file" | "uploaded-snapshot" | null
+  >(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const syncEngine = useRef<MmsSynchronizationEngine | null>(null);
+  const noticeSequence = useRef(0);
+
+  useEffect(
+    () => () => {
+      syncEngine.current?.stop();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || syncState.logs.length === 0) return;
+    try {
+      window.localStorage.setItem(
+        SYNC_LOG_STORAGE_KEY,
+        JSON.stringify(syncState.logs.slice(-250)),
+      );
+    } catch {
+      // Synchronization continues when device-local storage is unavailable.
+    }
+  }, [syncState.logs]);
+
+  useEffect(() => {
+    if (!syncNotice) return;
+    const timer = window.setTimeout(() => setSyncNotice(null), 7_000);
+    return () => window.clearTimeout(timer);
+  }, [syncNotice]);
 
   const filterOptions = useMemo(
     () => (canonical ? getMmsFilterOptions(canonical) : null),
@@ -347,30 +455,94 @@ export default function DashboardPage() {
     );
   }, [machineSearch, machineStatus, machines]);
 
-  async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  function startSynchronization(
+    source: MmsDataSource,
+    mode: "live-file" | "uploaded-snapshot",
+  ): void {
+    const hadDataset = canonical != null;
+    let hasPublishedDataset = hadDataset;
+    syncEngine.current?.stop();
     setProcessing(true);
     setLoadError("");
-    try {
-      const parsed = parseMmsCanonicalFile(await file.arrayBuffer(), file.name);
-      setCanonical(parsed);
+    setSourceMode(mode);
+    if (!hadDataset) {
       setDateFrom("");
       setDateTo("");
       setSelectedShift("");
       setSelectedMachine("");
       setSelectedMachineName("");
       setActiveTab("overview");
+    }
+
+    const engine = new MmsSynchronizationEngine(source, {
+      pollIntervalMs: SYNC_POLL_INTERVAL_MS,
+      staleAfterMs: SYNC_STALE_AFTER_MS,
+      initialLogs: readStoredSyncLogs(),
+      onData(data, changes) {
+        setCanonical(data);
+        if (hasPublishedDataset) {
+          noticeSequence.current += 1;
+          setSyncNotice({
+            id: noticeSequence.current,
+            message: syncNoticeMessage(changes),
+          });
+        }
+        hasPublishedDataset = true;
+      },
+      onState(state) {
+        setSyncState(state);
+        setProcessing(state.status === "syncing" && !hasPublishedDataset);
+        setLoadError(state.error ?? "");
+      },
+    });
+    syncEngine.current = engine;
+    engine.start();
+  }
+
+  async function connectWorkbook(): Promise<void> {
+    const picker = (window as WorkbookPickerWindow).showOpenFilePicker;
+    if (!picker) {
+      fileInput.current?.click();
+      return;
+    }
+    try {
+      const [handle] = await picker({
+        multiple: false,
+        types: [
+          {
+            description: "MMS Excel workbook",
+            accept: {
+              "application/vnd.ms-excel": [".xls"],
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+                [".xlsx"],
+            },
+          },
+        ],
+      });
+      if (!handle) return;
+      const source = new ExcelMmsDataSource(handle.name, async () => {
+        const currentFile = await handle.getFile();
+        return currentFile.arrayBuffer();
+      });
+      startSynchronization(source, "live-file");
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       setLoadError(
         error instanceof Error
           ? error.message
-          : "The workbook could not be processed.",
+          : "The workbook could not be connected.",
       );
-    } finally {
-      setProcessing(false);
-      event.target.value = "";
     }
+  }
+
+  function handleUpload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    startSynchronization(
+      new ExcelMmsDataSource(file.name, () => file.arrayBuffer()),
+      "uploaded-snapshot",
+    );
+    event.target.value = "";
   }
 
   function clearFilters() {
@@ -637,7 +809,7 @@ export default function DashboardPage() {
       <EmptyState
         error={loadError}
         processing={processing}
-        onUpload={() => fileInput.current?.click()}
+        onUpload={() => void connectWorkbook()}
         inputRef={fileInput}
         onChange={handleUpload}
       />
@@ -655,6 +827,14 @@ export default function DashboardPage() {
   ).length;
   const activeLabel =
     NAVIGATION.find((item) => item.id === activeTab)?.label ?? "Overview";
+  const syncStatusLabel = {
+    idle: "Waiting",
+    syncing: "Synchronizing",
+    live: "Live",
+    paused: "Paused",
+    stale: "Stale",
+    error: "Connection error",
+  }[syncState.status];
   const selectedScope =
     analytics.scope.dateFrom === analytics.scope.dateTo
       ? readableDate(analytics.scope.dateFrom)
@@ -1534,10 +1714,16 @@ export default function DashboardPage() {
 
         <div className="sidebar-bottom">
           <div className="system-health">
-            <span className="health-pulse" />
+            <span
+              className={`health-pulse health-${syncState.status}`}
+            />
             <div>
-              <strong>Local analysis active</strong>
-              <small>No workbook data leaves this device</small>
+              <strong>{syncStatusLabel} synchronization</strong>
+              <small>
+                {sourceMode === "live-file"
+                  ? "Live workbook · 60-second checks"
+                  : "Uploaded snapshot · manual replacement"}
+              </small>
             </div>
           </div>
         </div>
@@ -1550,24 +1736,39 @@ export default function DashboardPage() {
             <strong>{activeLabel}</strong>
           </div>
           <div className="topbar-actions">
-            <div className="dataset-health">
+            <div className={`dataset-health sync-${syncState.status}`}>
               <i />
               <span>
-                <strong>Filtered dataset ready</strong>
+                <strong>{syncStatusLabel}</strong>
                 <small>
-                  {integerFormat.format(
-                    analytics.scope.productionRecordCount,
-                  )}{" "}
-                  production records
+                  Last sync{" "}
+                  {readableTimestamp(syncState.lastSuccessfulSyncAt)}
                 </small>
               </span>
             </div>
             <button
               className="button button-secondary"
-              onClick={() => fileInput.current?.click()}
+              onClick={() => void syncEngine.current?.syncNow()}
+              disabled={syncState.status === "syncing"}
+            >
+              Sync now
+            </button>
+            <button
+              className="button button-secondary"
+              onClick={() =>
+                syncState.status === "paused"
+                  ? syncEngine.current?.resume()
+                  : syncEngine.current?.pause()
+              }
+            >
+              {syncState.status === "paused" ? "Resume" : "Pause"}
+            </button>
+            <button
+              className="button button-secondary"
+              onClick={() => void connectWorkbook()}
               disabled={processing}
             >
-              {processing ? "Processing…" : "Import workbook"}
+              {processing ? "Processing…" : "Change workbook"}
             </button>
             <input
               ref={fileInput}
@@ -1579,6 +1780,57 @@ export default function DashboardPage() {
             />
           </div>
         </header>
+
+        <section className="sync-strip" aria-label="Synchronization status">
+          <div>
+            <span>Source</span>
+            <strong>{syncState.sourceName ?? canonical.source.fileName}</strong>
+          </div>
+          <div>
+            <span>Last successful synchronization</span>
+            <strong>
+              {readableTimestamp(syncState.lastSuccessfulSyncAt)}
+            </strong>
+          </div>
+          <div>
+            <span>Last record watermark</span>
+            <strong>
+              {syncState.cursor.highWatermarkEpochMs == null
+                ? "Not available"
+                : readableTimestamp(
+                    new Date(
+                      syncState.cursor.highWatermarkEpochMs,
+                    ).toISOString(),
+                  )}
+            </strong>
+          </div>
+          <div>
+            <span>Latest change</span>
+            <strong>
+              +{syncState.lastChanges.added} · ~
+              {syncState.lastChanges.modified} · −
+              {syncState.lastChanges.removed}
+            </strong>
+          </div>
+          <details className="sync-log-panel">
+            <summary>Sync logs ({syncState.logs.length})</summary>
+            <div>
+              {syncState.logs
+                .slice()
+                .reverse()
+                .slice(0, 12)
+                .map((entry) => (
+                  <article
+                    key={entry.id}
+                    className={`sync-log-${entry.level}`}
+                  >
+                    <span>{readableTimestamp(entry.timestamp)}</span>
+                    <p>{entry.message}</p>
+                  </article>
+                ))}
+            </div>
+          </details>
+        </section>
 
         <section className="global-filter-bar">
           <label>
@@ -1641,6 +1893,20 @@ export default function DashboardPage() {
         </section>
 
         {loadError ? <div className="error-banner">{loadError}</div> : null}
+        {syncNotice ? (
+          <div className="sync-notification" role="status">
+            <div>
+              <strong>Dashboard refreshed</strong>
+              <span>{syncNotice.message}</span>
+            </div>
+            <button
+              aria-label="Dismiss synchronization notification"
+              onClick={() => setSyncNotice(null)}
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
 
         <main className="dashboard-content">
           <div className="content-frame">

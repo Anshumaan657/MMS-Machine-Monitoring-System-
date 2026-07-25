@@ -321,6 +321,26 @@ select:focus-visible {
   animation: pulse-ring 2s infinite;
 }
 
+.health-syncing,
+.health-stale,
+.health-error,
+.health-paused {
+  background: var(--amber);
+  box-shadow: 0 0 0.8rem rgba(251, 191, 36, 0.68);
+}
+
+.health-error,
+.health-stale {
+  background: var(--rose);
+  box-shadow: 0 0 0.8rem rgba(251, 113, 133, 0.68);
+}
+
+.health-paused::after,
+.health-error::after,
+.health-stale::after {
+  animation: none;
+}
+
 .operator-card > span {
   display: grid;
   place-items: center;
@@ -395,6 +415,18 @@ select:focus-visible {
   border-radius: 50%;
   background: var(--emerald);
   box-shadow: 0 0 0.75rem rgba(52, 211, 153, 0.8);
+}
+
+.dataset-health.sync-syncing > i,
+.dataset-health.sync-paused > i {
+  background: var(--amber);
+  box-shadow: 0 0 0.75rem rgba(251, 191, 36, 0.75);
+}
+
+.dataset-health.sync-error > i,
+.dataset-health.sync-stale > i {
+  background: var(--rose);
+  box-shadow: 0 0 0.75rem rgba(251, 113, 133, 0.75);
 }
 
 .dataset-health > span {
@@ -1940,6 +1972,154 @@ select:focus-visible {
   font-size: 0.62rem;
 }
 
+.sync-strip {
+  position: relative;
+  z-index: 19;
+  display: grid;
+  grid-template-columns:
+    minmax(10rem, 1.2fr)
+    minmax(11rem, 1fr)
+    minmax(11rem, 1fr)
+    minmax(8rem, 0.7fr)
+    auto;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.62rem max(1.5rem, calc((100% - 100rem) / 2 + 1.5rem));
+  border-bottom: 0.0625rem solid var(--line);
+  background: rgba(15, 23, 42, 0.68);
+}
+
+.sync-strip > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.16rem;
+}
+
+.sync-strip > div > span {
+  color: var(--subtle);
+  font-size: 0.55rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sync-strip > div > strong {
+  overflow: hidden;
+  color: #dbeafe;
+  font-size: 0.65rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-log-panel {
+  position: relative;
+  justify-self: end;
+}
+
+.sync-log-panel summary {
+  padding: 0.5rem 0.7rem;
+  border: 0.0625rem solid var(--line);
+  border-radius: 0.55rem;
+  background: rgba(255, 255, 255, 0.04);
+  color: #cbd5e1;
+  cursor: pointer;
+  font-size: 0.62rem;
+  font-weight: 700;
+  list-style: none;
+}
+
+.sync-log-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.sync-log-panel[open] > div {
+  position: absolute;
+  top: calc(100% + 0.55rem);
+  right: 0;
+  z-index: 50;
+  width: min(32rem, 72vw);
+  max-height: 24rem;
+  padding: 0.55rem;
+  overflow-y: auto;
+  border: 0.0625rem solid var(--line-strong);
+  border-radius: 0.8rem;
+  background: rgba(7, 10, 18, 0.98);
+  box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.45);
+}
+
+.sync-log-panel article {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 0.6rem;
+  padding: 0.52rem;
+  border-bottom: 0.0625rem solid var(--line);
+}
+
+.sync-log-panel article:last-child {
+  border-bottom: 0;
+}
+
+.sync-log-panel article span {
+  color: var(--subtle);
+  font-size: 0.55rem;
+}
+
+.sync-log-panel article p {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.6rem;
+  line-height: 1.45;
+}
+
+.sync-log-panel .sync-log-success p {
+  color: #a7f3d0;
+}
+
+.sync-log-panel .sync-log-warning p {
+  color: #fde68a;
+}
+
+.sync-log-panel .sync-log-error p {
+  color: #fecdd3;
+}
+
+.sync-notification {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  max-width: min(28rem, calc(100vw - 3rem));
+  padding: 0.9rem 1rem;
+  border: 0.0625rem solid rgba(52, 211, 153, 0.35);
+  border-radius: 0.8rem;
+  background: rgba(6, 22, 20, 0.96);
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.38);
+}
+
+.sync-notification > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.sync-notification strong {
+  color: #d1fae5;
+  font-size: 0.72rem;
+}
+
+.sync-notification span {
+  color: #a7f3d0;
+  font-size: 0.62rem;
+  line-height: 1.45;
+}
+
+.sync-notification button {
+  color: #a7f3d0;
+  font-size: 1.1rem;
+}
+
 .loading-state,
 .empty-state {
   display: flex;
@@ -2209,6 +2389,15 @@ select:focus-visible {
 
   .global-filter-bar {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .sync-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .sync-log-panel {
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 }
 

@@ -33,21 +33,23 @@ test("server-renders the MMS application shell", async () => {
   const html = await response.text();
   assert.match(html, /MMS Intelligence™ \| Industrial Analytics Command Center/i);
   assert.match(html, /Upload a verified MMS workbook to begin/i);
-  assert.match(html, /Import workbook/i);
+  assert.match(html, /Connect workbook/i);
   assert.doesNotMatch(html, /codex-preview/);
   assert.doesNotMatch(html, /Your site is taking shape/);
 });
 
 test("contains the functional dashboard, query engine, and report export", async () => {
-  const [page, layout, packageJson, parser, queryEngine] = await Promise.all([
+  const [page, layout, packageJson, parser, queryEngine, syncEngine] =
+    await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../app/mms.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/analytics-query-engine.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/synchronization-engine.ts", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /Import workbook/);
+  assert.match(page, /Connect workbook/);
   assert.match(page, /Data quality command center/);
   assert.match(page, /Calculated production loss/);
   assert.match(page, /Management summary/);
@@ -61,7 +63,12 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(page, /Financial Losses/);
   assert.match(page, /Rejection Rework Scrap/);
   assert.match(page, /queryMmsAnalytics/);
-  assert.match(page, /parseMmsCanonicalFile/);
+  assert.match(page, /ExcelMmsDataSource/);
+  assert.match(page, /showOpenFilePicker/);
+  assert.match(page, /Last successful synchronization/);
+  assert.match(page, /Sync now/);
+  assert.match(page, /Resume/);
+  assert.match(page, /Sync logs/);
   assert.doesNotMatch(page, /temperature:\s*number/i);
   assert.doesNotMatch(page, /vibration:\s*number/i);
   assert.doesNotMatch(page, /rpm:\s*number/i);
@@ -75,6 +82,11 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(parser, /summarizeWorkbook/);
   assert.match(queryEngine, /dateRange/);
   assert.match(queryEngine, /downtimeReason/);
+  assert.match(syncEngine, /reconcileMmsSnapshots/);
+  assert.match(syncEngine, /retryDelaysMs/);
+  assert.match(syncEngine, /lastSuccessfulSyncAt/);
+  assert.match(syncEngine, /duplicateKeys/);
+  assert.match(syncEngine, /staleAfterMs/);
 
   await assert.rejects(
     access(new URL("../app/_sites-preview/SkeletonPreview.tsx", templateRoot)),
