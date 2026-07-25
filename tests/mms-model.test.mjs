@@ -331,3 +331,67 @@ test("adds a canonical warning when calculated and reported quantities differ", 
     ),
   );
 });
+
+test("attaches Availability and Performance while keeping OEE pending", () => {
+  const data = canonicalizeWorkbook(testWorkbook(), "fixture.xls");
+  const first = data.productionIntervals[0];
+
+  assert.equal(first.oeeComponents.plannedProductionTimeSeconds, 36_000);
+  assert.equal(first.oeeComponents.availability, 0.84166667);
+  assert.equal(first.oeeComponents.performance, 0.1980198);
+  assert.deepEqual(first.oeeComponents.quality, {
+    status: "pending",
+    value: null,
+  });
+  assert.deepEqual(first.oeeComponents.finalOee, {
+    status: "pending",
+    value: null,
+  });
+
+  assert.equal(data.availabilityPerformance.machineWise.length, 1);
+  assert.equal(data.availabilityPerformance.shiftWise.length, 2);
+  assert.equal(data.availabilityPerformance.daily.length, 1);
+  assert.equal(
+    data.availabilityPerformance.period.totals.plannedProductionTimeSeconds,
+    72_000,
+  );
+  assert.equal(data.availabilityPerformance.period.quality.status, "pending");
+  assert.equal(data.availabilityPerformance.period.finalOee.status, "pending");
+});
+
+test("builds separate quality, scrap, and rework analytics", () => {
+  const data = canonicalizeWorkbook(testWorkbook(), "fixture.xls");
+  const first = data.qualityAnalytics.records[0];
+
+  assert.equal(first.rejectedQuantity, 2);
+  assert.equal(first.reworkedQuantity, 1);
+  assert.equal(first.scrapPerPart, 0.25);
+  assert.equal(first.estimatedScrap, 12.5);
+  assert.equal(data.qualityAnalytics.period.totals.rejectedQuantity, 2);
+  assert.equal(data.qualityAnalytics.period.totals.reworkedQuantity, 1);
+  assert.equal(data.qualityAnalytics.period.totals.estimatedScrap, 12.5);
+  assert.equal(data.qualityAnalytics.oeeQualityStatus, "not_calculated");
+  assert.equal(data.qualityAnalytics.finalOeeStatus, "not_calculated");
+});
+
+test("builds event-level downtime and financial-loss intelligence", () => {
+  const data = canonicalizeWorkbook(testWorkbook(), "fixture.xls");
+
+  assert.equal(data.downtimeAnalytics.events.length, 3);
+  assert.equal(data.downtimeAnalytics.mergedEvents.length, 3);
+  assert.equal(data.downtimeAnalytics.events[0].classification, "downtime");
+  assert.equal(
+    data.downtimeAnalytics.events[0].calculatedMachineHourLoss,
+    600,
+  );
+  assert.equal(data.downtimeAnalytics.events[1].classification, "downtime");
+  assert.equal(data.downtimeAnalytics.events[2].classification, "unclassified");
+  assert.equal(data.downtimeAnalytics.period.totals.downtimeSeconds, 7_200);
+  assert.equal(
+    data.downtimeAnalytics.period.totals.calculatedMachineHourLoss,
+    1_200,
+  );
+  assert.equal(data.downtimeAnalytics.period.overlappingEventCount, 2);
+  assert.equal(data.downtimeAnalytics.machineRanking[0].machine, "M-01");
+  assert.equal(data.downtimeAnalytics.reasonPareto[0].downtimeSeconds, 3_600);
+});

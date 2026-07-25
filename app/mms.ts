@@ -1,9 +1,46 @@
 import * as XLSX from "xlsx";
 import {
+  aggregateAvailabilityPerformance,
+  calculateAvailabilityPerformance,
+  classifyOeeExclusion,
+  type AvailabilityPerformanceAnalytics,
+  type AvailabilityPerformanceResult,
+} from "./availability-performance-engine.ts";
+import {
+  buildDowntimeAnalytics,
+  type DowntimeAnalytics,
+} from "./downtime-engine.ts";
+import {
   calculateProductionMetrics,
   type ProductionCalculationResult,
 } from "./production-engine.ts";
+import {
+  buildQualityAnalytics,
+  type QualityAnalytics,
+} from "./quality-engine.ts";
 
+export type {
+  AvailabilityPerformanceAnalytics,
+  AvailabilityPerformanceInput,
+  AvailabilityPerformanceRecord,
+  AvailabilityPerformanceResult,
+  OeeAggregate,
+  OeeComponentIssueCode,
+  OeeExclusionReason,
+  PendingOeeMetric,
+} from "./availability-performance-engine.ts";
+export type {
+  DowntimeAggregate,
+  DowntimeAnalytics,
+  DowntimeClassification,
+  DowntimeContextInterval,
+  DowntimeEngineEventInput,
+  DowntimeEngineOptions,
+  DowntimeEventIntelligence,
+  DowntimeIntelligenceIssueCode,
+  DowntimeReasonPareto,
+  FinancialLossComparison,
+} from "./downtime-engine.ts";
 export type {
   MetricComparison,
   ProductionCalculationInput,
@@ -13,6 +50,13 @@ export type {
   QuantitySource,
   StandardizedCycleTimes,
 } from "./production-engine.ts";
+export type {
+  QualityAggregate,
+  QualityAnalytics,
+  QualityIssueCode,
+  QualityRecordInput,
+  QualityRecordResult,
+} from "./quality-engine.ts";
 
 export type ValidationSeverity = "error" | "warning";
 
@@ -116,6 +160,7 @@ export type ProductionInterval = {
   cycleTimesSeconds: CycleTimeSeconds;
   quantities: ProductionQuantities;
   calculations: ProductionCalculationResult;
+  oeeComponents: AvailabilityPerformanceResult;
   costs: ProductionCosts;
   scrapPerPart: number | null;
   qualityInterlock: string;
@@ -156,6 +201,9 @@ export type CanonicalMmsData = {
   };
   productionIntervals: ProductionInterval[];
   downtimeEvents: DowntimeEvent[];
+  availabilityPerformance: AvailabilityPerformanceAnalytics;
+  qualityAnalytics: QualityAnalytics;
+  downtimeAnalytics: DowntimeAnalytics;
   validationIssues: ValidationIssue[];
   importStats: {
     productRowsRead: number;
@@ -691,6 +739,7 @@ function parseProductionInterval(
   );
   const productName = clean(values["Product Name"]);
   const partNumber = clean(values["Part No."]);
+  const partName = clean(values["Part Name"]);
   const operator = operatorReference(values.Operator);
   const rawMachineType = clean(values["Machine Type"]);
   const machineType =
@@ -698,6 +747,8 @@ function parseProductionInterval(
   const stroke = numeric(values.Stroke);
   const multiplier = numeric(values["M. Factor"]);
   const reportedQuantity = numeric(values.Qty);
+  const shiftTimeSeconds = clockDurationSeconds(values["Shift Time"]);
+  const allowedTimeSeconds = clockDurationSeconds(values["Allowed Time"]);
   const operativeTimeSeconds = clockDurationSeconds(values["Opr. Time"]);
   const standardCycleTimeSeconds = secondsValue(values["Std. Cycle Time"]);
   const approvedCycleTimeSeconds = secondsValue(values["Approved Cycle Time"]);
@@ -719,6 +770,19 @@ function parseProductionInterval(
     shiftTarget,
     reportedProductionLoss,
   });
+  const oeeComponents = calculateAvailabilityPerformance({
+    shiftTimeSeconds,
+    allowedTimeSeconds,
+    operativeTimeSeconds,
+    producedQuantity: calculations.producedQuantityUsed,
+    operativeTimeTarget: calculations.operativeTimeTarget,
+    exclusionReason: classifyOeeExclusion([
+      productName,
+      partName,
+      partNumber,
+    ]),
+  });
+
   const fingerprint = [
     machine,
     shift,
@@ -741,15 +805,15 @@ function parseProductionInterval(
     shift,
     product: {
       partNumber,
-      partName: clean(values["Part Name"]),
+      partName,
       partErpCode: clean(values["Part ERP Code"]),
       productName,
       erpCode: clean(values["ERP Code"]),
     },
     operator,
     timesSeconds: {
-      shift: clockDurationSeconds(values["Shift Time"]),
-      allowed: clockDurationSeconds(values["Allowed Time"]),
+      shift: shiftTimeSeconds,
+      allowed: allowedTimeSeconds,
       operative: operativeTimeSeconds,
       nonOperative: clockDurationSeconds(values["Non Opr. Time"]),
       downtime: clockDurationSeconds(values["Down Time"]),
@@ -776,6 +840,7 @@ function parseProductionInterval(
       errorStroke: numeric(values["Error Stroke"]),
     },
     calculations,
+    oeeComponents,
     costs: {
       part: numeric(values["Part Cost"]),
       component: numeric(values["Component Cost"]),
@@ -1063,6 +1128,60 @@ export function canonicalizeWorkbook(
   );
   validateTimeline(downtimeEvents, validationIssues, "OVERLAPPING_DOWNTIME_EVENT");
   finalizeValidity([...productionIntervals, ...downtimeEvents], validationIssues);
+  const availabilityPerformance = aggregateAvailabilityPerformance(
+    productionIntervals.map((interval) => ({
+      id: interval.id,
+      machine: interval.machine,
+      shift: interval.shift,
+      date: interval.date,
+      ...interval.oeeComponents,
+    })),
+  );
+  const qualityAnalytics = buildQualityAnalytics(
+    productionIntervals.map((interval) => ({
+      id: interval.id,
+      machine: interval.machine,
+      shift: interval.shift,
+      date: interval.date,
+      producedQuantity: interval.calculations.producedQuantityUsed,
+      rejectedQuantity: interval.quantities.rejected,
+      reworkedQuantity: interval.quantities.reworked,
+      scrapPerPart: interval.scrapPerPart,
+    })),
+  );
+  const downtimeAnalytics = buildDowntimeAnalytics(
+    downtimeEvents.map((event) => ({
+      id: event.id,
+      machine: event.machine,
+      shift: event.shift,
+      date: event.date,
+      startEpochMs: event.startEpochMs,
+      endEpochMs: event.endEpochMs,
+      startAt: event.startAt,
+      endAt: event.endAt,
+      durationSeconds: event.durationSeconds,
+      productName: event.productName,
+      reasonType: event.reasonType,
+      reason: event.reason,
+      isUnreported: event.isUnreported,
+      hasOverlap: event.issueCodes.includes("OVERLAPPING_DOWNTIME_EVENT"),
+      reportedMachineHourLoss: event.reportedMachineHourLoss,
+    })),
+    productionIntervals.map((interval) => ({
+      id: interval.id,
+      machine: interval.machine,
+      shift: interval.shift,
+      date: interval.date,
+      startEpochMs: interval.startEpochMs,
+      endEpochMs: interval.endEpochMs,
+      productName: interval.product.productName,
+      additionalOvertimeThresholdSeconds:
+        interval.timesSeconds.additionalOvertime,
+      machineHourCost: interval.costs.machinePerHour,
+      reportedNonOperativeSeconds: interval.timesSeconds.nonOperative,
+      reportedSystemOffSeconds: interval.timesSeconds.systemOff,
+    })),
+  );
 
   return {
     source: {
@@ -1073,6 +1192,9 @@ export function canonicalizeWorkbook(
     },
     productionIntervals,
     downtimeEvents,
+    availabilityPerformance,
+    qualityAnalytics,
+    downtimeAnalytics,
     validationIssues,
     importStats: {
       productRowsRead: productRows.length,
