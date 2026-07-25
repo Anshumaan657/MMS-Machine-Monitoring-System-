@@ -306,9 +306,17 @@ export type MmsSummary = {
   };
 };
 
-type SheetRow = {
+export type MmsSourceRow = {
   rowNumber: number;
   values: Record<string, unknown>;
+};
+
+export type CanonicalMmsRowsInput = {
+  company: string;
+  sourceName: string;
+  productionRows: MmsSourceRow[];
+  downtimeRows: MmsSourceRow[];
+  parsedAt?: string;
 };
 
 type TimelineRecord = {
@@ -511,7 +519,7 @@ function isTotalLabel(value: unknown): boolean {
   return normalized(value).replace(/[=>\s]/g, "") === "TOTAL";
 }
 
-function isProductTotalRow(row: SheetRow): boolean {
+function isProductTotalRow(row: MmsSourceRow): boolean {
   return (
     isTotalLabel(row.values["Part No."]) ||
     isTotalLabel(row.values.Machine) ||
@@ -519,14 +527,14 @@ function isProductTotalRow(row: SheetRow): boolean {
   );
 }
 
-function isDowntimeTotalRow(row: SheetRow): boolean {
+function isDowntimeTotalRow(row: MmsSourceRow): boolean {
   return isTotalLabel(row.values.Shift) || isTotalLabel(row.values.Machine);
 }
 
 function extractRows(
   workbook: XLSX.WorkBook,
   requestedName: "Product Log Book" | "Down Time Details",
-): SheetRow[] {
+): MmsSourceRow[] {
   const sheetName =
     workbook.SheetNames.find(
       (name) => name.trim().toLowerCase() === requestedName.toLowerCase(),
@@ -748,7 +756,7 @@ function finalizeValidity(
 }
 
 function parseProductionInterval(
-  row: SheetRow,
+  row: MmsSourceRow,
   issues: ValidationIssue[],
 ): ProductionInterval {
   const values = row.values;
@@ -1004,7 +1012,10 @@ function parseProductionInterval(
   return interval;
 }
 
-function parseDowntimeEvent(row: SheetRow, issues: ValidationIssue[]): DowntimeEvent {
+function parseDowntimeEvent(
+  row: MmsSourceRow,
+  issues: ValidationIssue[],
+): DowntimeEvent {
   const values = row.values;
   const machine = clean(values.Machine);
   const shift = clean(values.Shift);
@@ -1123,14 +1134,19 @@ function parseDowntimeEvent(row: SheetRow, issues: ValidationIssue[]): DowntimeE
   return event;
 }
 
-export function canonicalizeWorkbook(
-  workbook: XLSX.WorkBook,
-  fileName: string,
-): CanonicalMmsData {
-  const productRows = extractRows(workbook, PRODUCT_SHEET);
-  const downtimeRows = extractRows(workbook, DOWNTIME_SHEET);
-  const productDataRows = productRows.filter((row) => !isProductTotalRow(row));
-  const downtimeDataRows = downtimeRows.filter((row) => !isDowntimeTotalRow(row));
+export function canonicalizeMmsRows({
+  company,
+  sourceName,
+  productionRows,
+  downtimeRows,
+  parsedAt = new Date().toISOString(),
+}: CanonicalMmsRowsInput): CanonicalMmsData {
+  const productDataRows = productionRows.filter(
+    (row) => !isProductTotalRow(row),
+  );
+  const downtimeDataRows = downtimeRows.filter(
+    (row) => !isDowntimeTotalRow(row),
+  );
   const validationIssues: ValidationIssue[] = [];
 
   const productionIntervals = productDataRows.map((row) =>
@@ -1210,10 +1226,9 @@ export function canonicalizeWorkbook(
 
   return {
     source: {
-      company:
-        clean(workbook.Sheets[workbook.SheetNames[0]]?.A1?.v) || "Imported MMS dataset",
-      fileName,
-      parsedAt: new Date().toISOString(),
+      company: clean(company) || "Imported MMS dataset",
+      fileName: sourceName,
+      parsedAt,
     },
     productionIntervals,
     downtimeEvents,
@@ -1222,14 +1237,29 @@ export function canonicalizeWorkbook(
     downtimeAnalytics,
     validationIssues,
     importStats: {
-      productRowsRead: productRows.length,
+      productRowsRead: productionRows.length,
       downtimeRowsRead: downtimeRows.length,
-      productTotalRowsExcluded: productRows.length - productDataRows.length,
+      productTotalRowsExcluded:
+        productionRows.length - productDataRows.length,
       downtimeTotalRowsExcluded: downtimeRows.length - downtimeDataRows.length,
       errorCount: validationIssues.filter((issue) => issue.severity === "error").length,
       warningCount: validationIssues.filter((issue) => issue.severity === "warning").length,
     },
   };
+}
+
+export function canonicalizeWorkbook(
+  workbook: XLSX.WorkBook,
+  fileName: string,
+): CanonicalMmsData {
+  return canonicalizeMmsRows({
+    company:
+      clean(workbook.Sheets[workbook.SheetNames[0]]?.A1?.v) ||
+      "Imported MMS dataset",
+    sourceName: fileName,
+    productionRows: extractRows(workbook, PRODUCT_SHEET),
+    downtimeRows: extractRows(workbook, DOWNTIME_SHEET),
+  });
 }
 
 const emptyAccumulator = (): Accumulator => ({
