@@ -1,5 +1,9 @@
 import * as XLSX from "xlsx";
 import {
+  queryMmsAnalytics,
+  type MmsAnalyticsFilters,
+} from "./analytics-query-engine.ts";
+import {
   aggregateAvailabilityPerformance,
   calculateAvailabilityPerformance,
   classifyOeeExclusion,
@@ -29,6 +33,22 @@ export type {
   OeeExclusionReason,
   PendingOeeMetric,
 } from "./availability-performance-engine.ts";
+export {
+  getMmsFilterOptions,
+  normalizeMmsAnalyticsFilters,
+  queryMmsAnalytics,
+} from "./analytics-query-engine.ts";
+export type {
+  AnalyticsFilterValue,
+  DataQualityFinding,
+  FilteredDataQuality,
+  FilteredMmsAnalytics,
+  MmsAnalyticsFilters,
+  MmsFilterOptions,
+  NormalizedMmsAnalyticsFilters,
+  ProductionQueryAggregate,
+  ProductionQueryAnalytics,
+} from "./analytics-query-engine.ts";
 export type {
   DowntimeAggregate,
   DowntimeAnalytics,
@@ -238,6 +258,11 @@ export type ShiftSummary = {
 export type MonthlySummary = ShiftSummary & { month: string };
 
 export type MmsSummary = {
+  selection: {
+    dateFrom: string | null;
+    dateTo: string | null;
+    activeFilterCount: number;
+  };
   source: {
     company: string;
     fileName: string;
@@ -1222,7 +1247,17 @@ function canonicalDateRange(days: Array<string | null>): [string, string] {
   return valid.length ? [valid[0], valid.at(-1)!] : ["Not available", "Not available"];
 }
 
-export function summarizeCanonicalData(data: CanonicalMmsData): MmsSummary {
+export function summarizeCanonicalData(
+  sourceData: CanonicalMmsData,
+  filters: MmsAnalyticsFilters = {},
+): MmsSummary {
+  const query = queryMmsAnalytics(sourceData, filters);
+  const data: CanonicalMmsData = {
+    ...sourceData,
+    productionIntervals: query.records.productionIntervals,
+    downtimeEvents: query.records.downtimeEvents,
+    validationIssues: query.dataQuality.validationIssues,
+  };
   const machines = new Map<string, Accumulator>();
   const shifts = new Map<string, Accumulator>();
   const months = new Map<string, Accumulator>();
@@ -1331,19 +1366,34 @@ export function summarizeCanonicalData(data: CanonicalMmsData): MmsSummary {
     0,
   );
 
-  const latestDate = Array.from(days.keys()).sort().at(-1) ?? "";
-  const latest = days.get(latestDate) ?? emptyAccumulator();
-  const latestMachineDowntime = new Map<string, number>();
+  const selectedPeriod = Array.from(days.values()).reduce(
+    (total, day) => ({
+      production: total.production + day.production,
+      target: total.target + day.target,
+      downtimeHours: total.downtimeHours + day.downtimeHours,
+      revenueLoss: total.revenueLoss + day.revenueLoss,
+      productRecords: total.productRecords + day.productRecords,
+      downtimeEvents: total.downtimeEvents + day.downtimeEvents,
+      unreportedEvents: total.unreportedEvents + day.unreportedEvents,
+    }),
+    emptyAccumulator(),
+  );
+  const selectedMachineDowntime = new Map<string, number>();
   for (const event of data.downtimeEvents) {
-    if (event.date !== latestDate || !event.machine) continue;
-    latestMachineDowntime.set(
+    if (!event.machine) continue;
+    selectedMachineDowntime.set(
       event.machine,
-      (latestMachineDowntime.get(event.machine) ?? 0) +
+      (selectedMachineDowntime.get(event.machine) ?? 0) +
         (event.durationSeconds ?? 0) / SECONDS_PER_HOUR,
     );
   }
   const [topDowntimeMachine = "Not available", topDowntimeMachineHours = 0] =
-    Array.from(latestMachineDowntime.entries()).sort((a, b) => b[1] - a[1])[0] ?? [];
+    Array.from(selectedMachineDowntime.entries()).sort((a, b) => b[1] - a[1])[0] ??
+    [];
+  const selectedDateLabel =
+    query.scope.dateFrom && query.scope.dateFrom === query.scope.dateTo
+      ? query.scope.dateFrom
+      : [query.scope.dateFrom, query.scope.dateTo].filter(Boolean).join(" to ");
 
   const unreported = data.downtimeEvents.filter((event) => event.isUnreported).length;
   const invalidDurations = data.validationIssues.filter(
@@ -1351,6 +1401,11 @@ export function summarizeCanonicalData(data: CanonicalMmsData): MmsSummary {
   ).length;
 
   return {
+    selection: {
+      dateFrom: query.scope.dateFrom,
+      dateTo: query.scope.dateTo,
+      activeFilterCount: query.activeFilterCount,
+    },
     source: {
       company: data.source.company,
       fileName: data.source.fileName,
@@ -1403,14 +1458,14 @@ export function summarizeCanonicalData(data: CanonicalMmsData): MmsSummary {
     shifts: shiftSummaries,
     monthly: monthlySummaries,
     latestDay: {
-      date: latestDate,
-      production: Math.round(latest.production),
-      target: rounded(latest.target),
-      attainment: latest.target
-        ? rounded((latest.production / latest.target) * 100)
+      date: selectedDateLabel,
+      production: Math.round(selectedPeriod.production),
+      target: rounded(selectedPeriod.target),
+      attainment: selectedPeriod.target
+        ? rounded((selectedPeriod.production / selectedPeriod.target) * 100)
         : null,
-      downtimeHours: rounded(latest.downtimeHours),
-      reportedRevenueLoss: Math.round(latest.revenueLoss),
+      downtimeHours: rounded(selectedPeriod.downtimeHours),
+      reportedRevenueLoss: Math.round(selectedPeriod.revenueLoss),
       topDowntimeMachine,
       topDowntimeMachineHours: rounded(topDowntimeMachineHours),
     },
@@ -1420,8 +1475,9 @@ export function summarizeCanonicalData(data: CanonicalMmsData): MmsSummary {
 export function summarizeWorkbook(
   workbook: XLSX.WorkBook,
   fileName: string,
+  filters: MmsAnalyticsFilters = {},
 ): MmsSummary {
-  return summarizeCanonicalData(canonicalizeWorkbook(workbook, fileName));
+  return summarizeCanonicalData(canonicalizeWorkbook(workbook, fileName), filters);
 }
 
 export function parseMmsCanonicalFile(
@@ -1435,15 +1491,20 @@ export function parseMmsCanonicalFile(
 export function parseMmsFileWithRecords(
   buffer: ArrayBuffer,
   fileName: string,
+  filters: MmsAnalyticsFilters = {},
 ): { canonical: CanonicalMmsData; summary: MmsSummary } {
   const canonical = parseMmsCanonicalFile(buffer, fileName);
-  return { canonical, summary: summarizeCanonicalData(canonical) };
+  return { canonical, summary: summarizeCanonicalData(canonical, filters) };
 }
 
 /**
  * Backwards-compatible dashboard API. Existing UI consumers continue to
  * receive MmsSummary while future calculation phases can use canonical data.
  */
-export function parseMmsFile(buffer: ArrayBuffer, fileName: string): MmsSummary {
-  return parseMmsFileWithRecords(buffer, fileName).summary;
+export function parseMmsFile(
+  buffer: ArrayBuffer,
+  fileName: string,
+  filters: MmsAnalyticsFilters = {},
+): MmsSummary {
+  return parseMmsFileWithRecords(buffer, fileName, filters).summary;
 }
