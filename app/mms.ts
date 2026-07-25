@@ -1,4 +1,18 @@
 import * as XLSX from "xlsx";
+import {
+  calculateProductionMetrics,
+  type ProductionCalculationResult,
+} from "./production-engine.ts";
+
+export type {
+  MetricComparison,
+  ProductionCalculationInput,
+  ProductionCalculationIssueCode,
+  ProductionCalculationResult,
+  ProductionEngineOptions,
+  QuantitySource,
+  StandardizedCycleTimes,
+} from "./production-engine.ts";
 
 export type ValidationSeverity = "error" | "warning";
 
@@ -19,6 +33,7 @@ export type ValidationCode =
   | "MISSING_SHIFT"
   | "OVERLAPPING_DOWNTIME_EVENT"
   | "OVERLAPPING_PRODUCTION_INTERVAL"
+  | "QUANTITY_MISMATCH"
   | "UNREPORTED_DOWNTIME";
 
 export type ValidationIssue = {
@@ -100,6 +115,7 @@ export type ProductionInterval = {
   timesSeconds: ProductionTimeSeconds;
   cycleTimesSeconds: CycleTimeSeconds;
   quantities: ProductionQuantities;
+  calculations: ProductionCalculationResult;
   costs: ProductionCosts;
   scrapPerPart: number | null;
   qualityInterlock: string;
@@ -679,7 +695,30 @@ function parseProductionInterval(
   const rawMachineType = clean(values["Machine Type"]);
   const machineType =
     !rawMachineType || normalized(rawMachineType) === "NO TYPE" ? null : rawMachineType;
-
+  const stroke = numeric(values.Stroke);
+  const multiplier = numeric(values["M. Factor"]);
+  const reportedQuantity = numeric(values.Qty);
+  const operativeTimeSeconds = clockDurationSeconds(values["Opr. Time"]);
+  const standardCycleTimeSeconds = secondsValue(values["Std. Cycle Time"]);
+  const approvedCycleTimeSeconds = secondsValue(values["Approved Cycle Time"]);
+  const reportedAchievedCycleTimeSeconds = secondsValue(
+    values["Achieve Cycle Time"],
+  );
+  const shiftTarget = numeric(values["Shift Target"]);
+  const reportedOperativeTimeTarget = numeric(values["Opr. Time Target"]);
+  const reportedProductionLoss = numeric(values["Product Loss"]);
+  const calculations = calculateProductionMetrics({
+    stroke,
+    multiplier,
+    reportedQuantity,
+    operativeTimeSeconds,
+    standardCycleTimeSeconds,
+    approvedCycleTimeSeconds,
+    reportedAchievedCycleTimeSeconds,
+    reportedOperativeTimeTarget,
+    shiftTarget,
+    reportedProductionLoss,
+  });
   const fingerprint = [
     machine,
     shift,
@@ -711,7 +750,7 @@ function parseProductionInterval(
     timesSeconds: {
       shift: clockDurationSeconds(values["Shift Time"]),
       allowed: clockDurationSeconds(values["Allowed Time"]),
-      operative: clockDurationSeconds(values["Opr. Time"]),
+      operative: operativeTimeSeconds,
       nonOperative: clockDurationSeconds(values["Non Opr. Time"]),
       downtime: clockDurationSeconds(values["Down Time"]),
       systemOff: clockDurationSeconds(values["System Off"]),
@@ -720,25 +759,23 @@ function parseProductionInterval(
       productionGap: secondsValue(values["Prod Gap Between"]),
     },
     cycleTimesSeconds: {
-      standard: secondsValue(values["Std. Cycle Time"]),
-      approved: secondsValue(values["Approved Cycle Time"]),
-      achieved: secondsValue(values["Achieve Cycle Time"]),
+      standard: standardCycleTimeSeconds,
+      approved: approvedCycleTimeSeconds,
+      achieved: reportedAchievedCycleTimeSeconds,
     },
     quantities: {
-      stroke: numeric(values.Stroke),
-      multiplier: numeric(values["M. Factor"]),
-      reported: numeric(values.Qty),
-      calculatedFromStroke:
-        numeric(values.Stroke) != null && numeric(values["M. Factor"]) != null
-          ? rounded(numeric(values.Stroke)! * numeric(values["M. Factor"])!, 4)
-          : null,
-      shiftTarget: numeric(values["Shift Target"]),
-      operativeTimeTarget: numeric(values["Opr. Time Target"]),
-      productionLoss: numeric(values["Product Loss"]),
+      stroke,
+      multiplier,
+      reported: reportedQuantity,
+      calculatedFromStroke: calculations.actualQuantity,
+      shiftTarget,
+      operativeTimeTarget: reportedOperativeTimeTarget,
+      productionLoss: reportedProductionLoss,
       rejected: numeric(values["Reject Qty"]),
       reworked: numeric(values["Rework Qty"]),
       errorStroke: numeric(values["Error Stroke"]),
     },
+    calculations,
     costs: {
       part: numeric(values["Part Cost"]),
       component: numeric(values["Component Cost"]),
@@ -862,6 +899,16 @@ function parseProductionInterval(
   ];
   for (const [field, raw, parsed] of numericFields) {
     addNumericIssue(issues, interval, raw, parsed, field);
+  }
+  if (calculations.comparisons.quantity.matches === false) {
+    addIssue(
+      issues,
+      interval,
+      "QUANTITY_MISMATCH",
+      "warning",
+      `Reported Qty ${calculations.comparisons.quantity.reported} does not match Stroke × M. Factor ${calculations.actualQuantity}.`,
+      "Qty",
+    );
   }
 
   return interval;

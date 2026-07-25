@@ -293,3 +293,41 @@ test("supports ArrayBuffer parsing and backwards-compatible summaries", () => {
   assert.equal(summary.overview.totalProduction, 60);
   assert.equal(summary.overview.reportedRevenueLoss, 1200);
 });
+
+test("attaches verified production calculations to canonical intervals", () => {
+  const data = canonicalizeWorkbook(testWorkbook(), "fixture.xls");
+  const first = data.productionIntervals[0];
+
+  assert.equal(first.calculations.actualQuantity, 50);
+  assert.equal(first.calculations.producedQuantityUsed, 50);
+  assert.equal(first.calculations.quantitySource, "stroke_x_multiplier");
+  assert.equal(first.calculations.achievedCycleTimeSeconds, 606);
+  assert.equal(first.calculations.operativeTimeTarget, 252.5);
+  assert.equal(first.calculations.productionLoss, 250);
+  assert.equal(first.calculations.comparisons.quantity.matches, true);
+});
+
+test("adds a canonical warning when calculated and reported quantities differ", () => {
+  const workbook = testWorkbook();
+  const qtyColumn = productHeaders.indexOf("Qty");
+  const firstProductExcelRow = 7;
+  const qtyCell = XLSX.utils.encode_cell({
+    r: firstProductExcelRow - 1,
+    c: qtyColumn,
+  });
+  workbook.Sheets["Product Log Book"][qtyCell].v = 49;
+
+  const data = canonicalizeWorkbook(workbook, "fixture.xls");
+  const first = data.productionIntervals[0];
+
+  assert.equal(first.calculations.actualQuantity, 50);
+  assert.equal(first.calculations.comparisons.quantity.reported, 49);
+  assert.equal(first.calculations.comparisons.quantity.matches, false);
+  assert.ok(first.issueCodes.includes("QUANTITY_MISMATCH"));
+  assert.ok(
+    data.validationIssues.some(
+      (issue) =>
+        issue.recordId === first.id && issue.code === "QUANTITY_MISMATCH",
+    ),
+  );
+});
