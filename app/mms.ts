@@ -1,5 +1,156 @@
 import * as XLSX from "xlsx";
 
+export type ValidationSeverity = "error" | "warning";
+
+export type ValidationCode =
+  | "CROSS_MIDNIGHT_END_INFERRED"
+  | "DUPLICATE_DOWNTIME_EVENT"
+  | "DUPLICATE_PRODUCTION_INTERVAL"
+  | "INVALID_DATE"
+  | "INVALID_DURATION"
+  | "INVALID_INTERVAL"
+  | "INVALID_NUMBER"
+  | "MISSING_MACHINE"
+  | "MISSING_MACHINE_TYPE"
+  | "MISSING_OPERATOR"
+  | "MISSING_PRODUCT"
+  | "MISSING_PRODUCT_NAME"
+  | "MISSING_REASON"
+  | "MISSING_SHIFT"
+  | "OVERLAPPING_DOWNTIME_EVENT"
+  | "OVERLAPPING_PRODUCTION_INTERVAL"
+  | "UNREPORTED_DOWNTIME";
+
+export type ValidationIssue = {
+  code: ValidationCode;
+  severity: ValidationSeverity;
+  message: string;
+  sheet: "Product Log Book" | "Down Time Details";
+  rowNumber: number;
+  recordId: string;
+  field?: string;
+};
+
+export type OperatorReference = {
+  raw: string;
+  names: string[];
+  isMissing: boolean;
+};
+
+export type ProductReference = {
+  partNumber: string;
+  partName: string;
+  partErpCode: string;
+  productName: string;
+  erpCode: string;
+};
+
+export type ProductionTimeSeconds = {
+  shift: number | null;
+  allowed: number | null;
+  operative: number | null;
+  nonOperative: number | null;
+  downtime: number | null;
+  systemOff: number | null;
+  setup: number | null;
+  additionalOvertime: number | null;
+  productionGap: number | null;
+};
+
+export type CycleTimeSeconds = {
+  standard: number | null;
+  approved: number | null;
+  achieved: number | null;
+};
+
+export type ProductionQuantities = {
+  stroke: number | null;
+  multiplier: number | null;
+  reported: number | null;
+  calculatedFromStroke: number | null;
+  shiftTarget: number | null;
+  operativeTimeTarget: number | null;
+  productionLoss: number | null;
+  rejected: number | null;
+  reworked: number | null;
+  errorStroke: number | null;
+};
+
+export type ProductionCosts = {
+  part: number | null;
+  component: number | null;
+  machinePerHour: number | null;
+  operatorPerHour: number | null;
+};
+
+export type ProductionInterval = {
+  id: string;
+  sourceSheet: "Product Log Book";
+  sourceRow: number;
+  date: string | null;
+  startAt: string | null;
+  endAt: string | null;
+  startEpochMs: number | null;
+  endEpochMs: number | null;
+  machine: string;
+  machineType: string | null;
+  shift: string;
+  product: ProductReference;
+  operator: OperatorReference;
+  timesSeconds: ProductionTimeSeconds;
+  cycleTimesSeconds: CycleTimeSeconds;
+  quantities: ProductionQuantities;
+  costs: ProductionCosts;
+  scrapPerPart: number | null;
+  qualityInterlock: string;
+  processDependency: string;
+  proxy: string;
+  toolRequired: string;
+  issueCodes: ValidationCode[];
+  isValid: boolean;
+};
+
+export type DowntimeEvent = {
+  id: string;
+  sourceSheet: "Down Time Details";
+  sourceRow: number;
+  date: string | null;
+  startAt: string | null;
+  endAt: string | null;
+  startEpochMs: number | null;
+  endEpochMs: number | null;
+  durationSeconds: number | null;
+  machine: string;
+  shift: string;
+  productName: string;
+  operator: OperatorReference;
+  reasonType: string;
+  reason: string;
+  isUnreported: boolean;
+  reportedMachineHourLoss: number | null;
+  issueCodes: ValidationCode[];
+  isValid: boolean;
+};
+
+export type CanonicalMmsData = {
+  source: {
+    company: string;
+    fileName: string;
+    parsedAt: string;
+  };
+  productionIntervals: ProductionInterval[];
+  downtimeEvents: DowntimeEvent[];
+  validationIssues: ValidationIssue[];
+  importStats: {
+    productRowsRead: number;
+    downtimeRowsRead: number;
+    productTotalRowsExcluded: number;
+    downtimeTotalRowsExcluded: number;
+    errorCount: number;
+    warningCount: number;
+  };
+};
+
 export type MachineSummary = {
   machine: string;
   production: number;
@@ -66,91 +217,20 @@ export type MmsSummary = {
   };
 };
 
-type SheetRow = Record<string, unknown>;
+type SheetRow = {
+  rowNumber: number;
+  values: Record<string, unknown>;
+};
 
-const NULLS = new Set(["", "NULL", "NONE", "N/A", "NA", "-"]);
-
-function clean(value: unknown): string {
-  return value == null ? "" : String(value).trim();
-}
-
-function missing(value: unknown): boolean {
-  return NULLS.has(clean(value).toUpperCase());
-}
-
-function numeric(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  const raw = clean(value).replaceAll(",", "");
-  if (!raw || NULLS.has(raw.toUpperCase())) return null;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parsedDate(value: unknown): Date | null {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
-  if (typeof value === "number") {
-    const decoded = XLSX.SSF.parse_date_code(value);
-    if (decoded) return new Date(decoded.y, decoded.m - 1, decoded.d, decoded.H, decoded.M, decoded.S);
-  }
-  const raw = clean(value).replace(/\s+/g, " ");
-  const match = raw.match(
-    /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?/i,
-  );
-  if (!match) return null;
-  const [, dd, mm, yyyy, hh = "0", min = "0", sec = "0", meridiem] = match;
-  let hour = Number(hh);
-  if (meridiem?.toUpperCase() === "PM" && hour < 12) hour += 12;
-  if (meridiem?.toUpperCase() === "AM" && hour === 12) hour = 0;
-  const result = new Date(Number(yyyy), Number(mm) - 1, Number(dd), hour, Number(min), Number(sec));
-  return Number.isNaN(result.getTime()) ? null : result;
-}
-
-function durationHours(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value * 24;
-  const match = clean(value).match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
-  if (!match) return null;
-  return Number(match[1]) + Number(match[2]) / 60 + Number(match[3] ?? 0) / 3600;
-}
-
-function isoDay(date: Date): string {
-  return [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    String(date.getDate()).padStart(2, "0"),
-  ].join("-");
-}
-
-function monthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-}
-
-function rounded(value: number, digits = 1): number {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
-}
-
-function extractRows(workbook: XLSX.WorkBook, requestedName: string): SheetRow[] {
-  const sheetName =
-    workbook.SheetNames.find((name) => name.trim().toLowerCase() === requestedName.toLowerCase()) ??
-    workbook.SheetNames.find((name) => name.toLowerCase().includes(requestedName.toLowerCase()));
-  if (!sheetName) throw new Error(`The workbook does not contain a “${requestedName}” sheet.`);
-
-  const grid = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[sheetName], {
-    header: 1,
-    defval: null,
-    raw: true,
-  });
-  const headerIndex = grid.findIndex(
-    (row) => clean(row?.[0]).toLowerCase() === "date" && clean(row?.[1]).toLowerCase() === "machine",
-  );
-  if (headerIndex < 0) throw new Error(`Could not find the data headers in “${sheetName}”.`);
-
-  const headers = grid[headerIndex].map(clean);
-  return grid
-    .slice(headerIndex + 1)
-    .filter((row) => row.some((value) => !missing(value)))
-    .map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index]])));
-}
+type TimelineRecord = {
+  id: string;
+  machine: string;
+  startEpochMs: number | null;
+  endEpochMs: number | null;
+  sourceSheet: "Product Log Book" | "Down Time Details";
+  sourceRow: number;
+  issueCodes: ValidationCode[];
+};
 
 type Accumulator = {
   production: number;
@@ -162,6 +242,802 @@ type Accumulator = {
   unreportedEvents: number;
 };
 
+const TEXT_MISSING_MARKERS = new Set(["", "NONE", "N/A", "NA", "-"]);
+const PRODUCT_SHEET = "Product Log Book" as const;
+const DOWNTIME_SHEET = "Down Time Details" as const;
+const SECONDS_PER_DAY = 86_400;
+const SECONDS_PER_HOUR = 3_600;
+
+function clean(value: unknown): string {
+  return value == null ? "" : String(value).trim();
+}
+
+function normalized(value: unknown): string {
+  return clean(value).toUpperCase();
+}
+
+/**
+ * `NULL` and `NULL TURN` are intentionally not missing markers. 3D confirmed
+ * that both are user-defined product names in MMS.
+ */
+export function isMissingText(value: unknown): boolean {
+  return TEXT_MISSING_MARKERS.has(normalized(value));
+}
+
+function isBlankCell(value: unknown): boolean {
+  return value == null || clean(value) === "";
+}
+
+function numeric(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const raw = clean(value).replaceAll(",", "");
+  if (!raw || TEXT_MISSING_MARKERS.has(raw.toUpperCase())) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parsedTimestamp(value: unknown): Date | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === "number") {
+    const decoded = XLSX.SSF.parse_date_code(value);
+    if (decoded) {
+      return new Date(decoded.y, decoded.m - 1, decoded.d, decoded.H, decoded.M, decoded.S);
+    }
+  }
+
+  const raw = clean(value).replace(/\s+/g, " ");
+  const match = raw.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i,
+  );
+  if (!match) return null;
+
+  const [, dd, mm, yyyy, hh = "0", min = "0", sec = "0", meridiem] = match;
+  let hour = Number(hh);
+  if (meridiem?.toUpperCase() === "PM" && hour < 12) hour += 12;
+  if (meridiem?.toUpperCase() === "AM" && hour === 12) hour = 0;
+
+  const result = new Date(
+    Number(yyyy),
+    Number(mm) - 1,
+    Number(dd),
+    hour,
+    Number(min),
+    Number(sec),
+  );
+  if (
+    Number.isNaN(result.getTime()) ||
+    result.getFullYear() !== Number(yyyy) ||
+    result.getMonth() !== Number(mm) - 1 ||
+    result.getDate() !== Number(dd)
+  ) {
+    return null;
+  }
+  return result;
+}
+
+function normalizedIntervalEnd(
+  start: Date | null,
+  end: Date | null,
+  shift: string,
+): { value: Date | null; crossMidnightInferred: boolean } {
+  if (!start || !end || end.getTime() > start.getTime()) {
+    return { value: end, crossMidnightInferred: false };
+  }
+
+  const looksLikeNightShift =
+    normalized(shift).includes("SHIFT 2") ||
+    (start.getHours() >= 12 && end.getHours() < 12);
+  if (!looksLikeNightShift) return { value: end, crossMidnightInferred: false };
+
+  const adjusted = new Date(end.getTime());
+  adjusted.setDate(adjusted.getDate() + 1);
+  const durationMs = adjusted.getTime() - start.getTime();
+  if (durationMs <= 0 || durationMs > 24 * 60 * 60 * 1000) {
+    return { value: end, crossMidnightInferred: false };
+  }
+  return { value: adjusted, crossMidnightInferred: true };
+}
+
+function clockDurationSeconds(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.round(value * SECONDS_PER_DAY);
+  }
+  const match = clean(value).match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3] ?? 0);
+  if (minutes > 59 || seconds > 59) return null;
+  return hours * SECONDS_PER_HOUR + minutes * 60 + seconds;
+}
+
+/**
+ * Setup, gap, overtime and cycle fields are seconds in the MMS export when
+ * numeric. If an H:M[:S] string appears, it is normalized to seconds as well.
+ */
+function secondsValue(value: unknown): number | null {
+  const number = numeric(value);
+  if (number != null) return number >= 0 ? number : null;
+  return clockDurationSeconds(value);
+}
+
+function localIsoTimestamp(date: Date | null): string | null {
+  if (!date) return null;
+  return [
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+      date.getDate(),
+    ).padStart(2, "0")}`,
+    `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(
+      2,
+      "0",
+    )}:${String(date.getSeconds()).padStart(2, "0")}`,
+  ].join("T");
+}
+
+function isoDay(date: Date): string {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function monthKey(day: string): string {
+  return day.slice(0, 7);
+}
+
+function rounded(value: number, digits = 1): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36).padStart(7, "0");
+}
+
+function recordId(prefix: "PI" | "DT", fingerprint: string): string {
+  return `${prefix}-${stableHash(fingerprint)}`;
+}
+
+function operatorReference(value: unknown): OperatorReference {
+  const raw = clean(value);
+  const tokens = raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const names = tokens.filter((item) => normalized(item) !== "NO OPERATOR");
+  return {
+    raw,
+    names,
+    isMissing: !raw || tokens.some((item) => normalized(item) === "NO OPERATOR"),
+  };
+}
+
+function isTotalLabel(value: unknown): boolean {
+  return normalized(value).replace(/[=>\s]/g, "") === "TOTAL";
+}
+
+function isProductTotalRow(row: SheetRow): boolean {
+  return (
+    isTotalLabel(row.values["Part No."]) ||
+    isTotalLabel(row.values.Machine) ||
+    isTotalLabel(row.values.Shift)
+  );
+}
+
+function isDowntimeTotalRow(row: SheetRow): boolean {
+  return isTotalLabel(row.values.Shift) || isTotalLabel(row.values.Machine);
+}
+
+function extractRows(
+  workbook: XLSX.WorkBook,
+  requestedName: "Product Log Book" | "Down Time Details",
+): SheetRow[] {
+  const sheetName =
+    workbook.SheetNames.find(
+      (name) => name.trim().toLowerCase() === requestedName.toLowerCase(),
+    ) ??
+    workbook.SheetNames.find((name) =>
+      name.toLowerCase().includes(requestedName.toLowerCase()),
+    );
+  if (!sheetName) throw new Error(`The workbook does not contain a “${requestedName}” sheet.`);
+
+  const grid = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[sheetName], {
+    header: 1,
+    defval: null,
+    raw: true,
+  });
+  const headerIndex = grid.findIndex(
+    (row) =>
+      clean(row?.[0]).toLowerCase() === "date" &&
+      clean(row?.[1]).toLowerCase() === "machine",
+  );
+  if (headerIndex < 0) throw new Error(`Could not find the data headers in “${sheetName}”.`);
+
+  const headers = grid[headerIndex].map(clean);
+  return grid
+    .slice(headerIndex + 1)
+    .map((row, index) => ({
+      rowNumber: headerIndex + index + 2,
+      values: Object.fromEntries(headers.map((header, column) => [header, row[column]])),
+    }))
+    .filter((row) => Object.values(row.values).some((value) => !isBlankCell(value)));
+}
+
+function addIssue(
+  issues: ValidationIssue[],
+  record: TimelineRecord,
+  code: ValidationCode,
+  severity: ValidationSeverity,
+  message: string,
+  field?: string,
+): void {
+  if (!record.issueCodes.includes(code)) record.issueCodes.push(code);
+  issues.push({
+    code,
+    severity,
+    message,
+    sheet: record.sourceSheet,
+    rowNumber: record.sourceRow,
+    recordId: record.id,
+    field,
+  });
+}
+
+function addRequiredFieldIssues(
+  issues: ValidationIssue[],
+  record: TimelineRecord,
+  values: {
+    machine: string;
+    shift: string;
+    date: Date | null;
+    rawDate: unknown;
+    start: Date | null;
+    rawStart: unknown;
+    end: Date | null;
+    rawEnd: unknown;
+  },
+): void {
+  if (!values.machine) {
+    addIssue(issues, record, "MISSING_MACHINE", "error", "Machine is blank.", "Machine");
+  }
+  if (!values.shift) {
+    addIssue(issues, record, "MISSING_SHIFT", "error", "Shift is blank.", "Shift");
+  }
+  if (!values.date) {
+    addIssue(
+      issues,
+      record,
+      "INVALID_DATE",
+      "error",
+      isBlankCell(values.rawDate) ? "Date is blank." : "Date could not be parsed.",
+      "Date",
+    );
+  }
+  if (!values.start) {
+    addIssue(
+      issues,
+      record,
+      "INVALID_DATE",
+      "error",
+      isBlankCell(values.rawStart) ? "From Time is blank." : "From Time could not be parsed.",
+      "From Time",
+    );
+  }
+  if (!values.end) {
+    addIssue(
+      issues,
+      record,
+      "INVALID_DATE",
+      "error",
+      isBlankCell(values.rawEnd) ? "Till Time is blank." : "Till Time could not be parsed.",
+      "Till Time",
+    );
+  }
+  if (values.start && values.end && values.end.getTime() <= values.start.getTime()) {
+    addIssue(
+      issues,
+      record,
+      "INVALID_INTERVAL",
+      "error",
+      "Till Time must be later than From Time.",
+      "Till Time",
+    );
+  }
+}
+
+function addNumericIssue(
+  issues: ValidationIssue[],
+  record: TimelineRecord,
+  raw: unknown,
+  parsed: number | null,
+  field: string,
+  isDuration = false,
+): void {
+  if (!isBlankCell(raw) && parsed == null) {
+    addIssue(
+      issues,
+      record,
+      isDuration ? "INVALID_DURATION" : "INVALID_NUMBER",
+      "error",
+      `${field} could not be parsed.`,
+      field,
+    );
+  }
+}
+
+function validateTimeline(
+  records: TimelineRecord[],
+  issues: ValidationIssue[],
+  overlapCode:
+    | "OVERLAPPING_PRODUCTION_INTERVAL"
+    | "OVERLAPPING_DOWNTIME_EVENT",
+): void {
+  const byMachine = new Map<string, TimelineRecord[]>();
+  for (const record of records) {
+    if (!record.machine || record.startEpochMs == null || record.endEpochMs == null) continue;
+    const key = normalized(record.machine);
+    const group = byMachine.get(key) ?? [];
+    group.push(record);
+    byMachine.set(key, group);
+  }
+
+  for (const group of byMachine.values()) {
+    group.sort((a, b) => (a.startEpochMs ?? 0) - (b.startEpochMs ?? 0));
+    let active: TimelineRecord | null = null;
+    for (const current of group) {
+      if (
+        active &&
+        current.startEpochMs != null &&
+        active.endEpochMs != null &&
+        current.startEpochMs < active.endEpochMs
+      ) {
+        addIssue(
+          issues,
+          current,
+          overlapCode,
+          "error",
+          `Interval overlaps ${active.id} on the same machine.`,
+        );
+        if (!active.issueCodes.includes(overlapCode)) {
+          addIssue(
+            issues,
+            active,
+            overlapCode,
+            "error",
+            `Interval overlaps ${current.id} on the same machine.`,
+          );
+        }
+      }
+      if (!active || (current.endEpochMs ?? 0) > (active.endEpochMs ?? 0)) active = current;
+    }
+  }
+}
+
+function validateDuplicates(
+  records: TimelineRecord[],
+  issues: ValidationIssue[],
+  duplicateCode:
+    | "DUPLICATE_PRODUCTION_INTERVAL"
+    | "DUPLICATE_DOWNTIME_EVENT",
+): void {
+  const seen = new Map<string, TimelineRecord>();
+  for (const current of records) {
+    const fingerprint = [
+      normalized(current.machine),
+      current.startEpochMs,
+      current.endEpochMs,
+    ].join("|");
+    const previous = seen.get(fingerprint);
+    if (previous) {
+      addIssue(
+        issues,
+        current,
+        duplicateCode,
+        "error",
+        `Record duplicates ${previous.id}.`,
+      );
+    } else {
+      seen.set(fingerprint, current);
+    }
+  }
+}
+
+function finalizeValidity(
+  records: Array<ProductionInterval | DowntimeEvent>,
+  issues: ValidationIssue[],
+): void {
+  const invalidIds = new Set(
+    issues.filter((issue) => issue.severity === "error").map((issue) => issue.recordId),
+  );
+  for (const record of records) record.isValid = !invalidIds.has(record.id);
+}
+
+function parseProductionInterval(
+  row: SheetRow,
+  issues: ValidationIssue[],
+): ProductionInterval {
+  const values = row.values;
+  const machine = clean(values.Machine);
+  const shift = clean(values.Shift);
+  const date = parsedTimestamp(values.Date);
+  const start = parsedTimestamp(values["From Time"]);
+  const parsedEnd = parsedTimestamp(values["Till Time"]);
+  const { value: end, crossMidnightInferred } = normalizedIntervalEnd(
+    start,
+    parsedEnd,
+    shift,
+  );
+  const productName = clean(values["Product Name"]);
+  const partNumber = clean(values["Part No."]);
+  const operator = operatorReference(values.Operator);
+  const rawMachineType = clean(values["Machine Type"]);
+  const machineType =
+    !rawMachineType || normalized(rawMachineType) === "NO TYPE" ? null : rawMachineType;
+
+  const fingerprint = [
+    machine,
+    shift,
+    localIsoTimestamp(start),
+    localIsoTimestamp(end),
+    partNumber,
+    productName,
+  ].join("|");
+  const interval: ProductionInterval = {
+    id: recordId("PI", fingerprint),
+    sourceSheet: PRODUCT_SHEET,
+    sourceRow: row.rowNumber,
+    date: date ? isoDay(date) : null,
+    startAt: localIsoTimestamp(start),
+    endAt: localIsoTimestamp(end),
+    startEpochMs: start?.getTime() ?? null,
+    endEpochMs: end?.getTime() ?? null,
+    machine,
+    machineType,
+    shift,
+    product: {
+      partNumber,
+      partName: clean(values["Part Name"]),
+      partErpCode: clean(values["Part ERP Code"]),
+      productName,
+      erpCode: clean(values["ERP Code"]),
+    },
+    operator,
+    timesSeconds: {
+      shift: clockDurationSeconds(values["Shift Time"]),
+      allowed: clockDurationSeconds(values["Allowed Time"]),
+      operative: clockDurationSeconds(values["Opr. Time"]),
+      nonOperative: clockDurationSeconds(values["Non Opr. Time"]),
+      downtime: clockDurationSeconds(values["Down Time"]),
+      systemOff: clockDurationSeconds(values["System Off"]),
+      setup: secondsValue(values["Setup Time"]),
+      additionalOvertime: secondsValue(values["Additional Over Time"]),
+      productionGap: secondsValue(values["Prod Gap Between"]),
+    },
+    cycleTimesSeconds: {
+      standard: secondsValue(values["Std. Cycle Time"]),
+      approved: secondsValue(values["Approved Cycle Time"]),
+      achieved: secondsValue(values["Achieve Cycle Time"]),
+    },
+    quantities: {
+      stroke: numeric(values.Stroke),
+      multiplier: numeric(values["M. Factor"]),
+      reported: numeric(values.Qty),
+      calculatedFromStroke:
+        numeric(values.Stroke) != null && numeric(values["M. Factor"]) != null
+          ? rounded(numeric(values.Stroke)! * numeric(values["M. Factor"])!, 4)
+          : null,
+      shiftTarget: numeric(values["Shift Target"]),
+      operativeTimeTarget: numeric(values["Opr. Time Target"]),
+      productionLoss: numeric(values["Product Loss"]),
+      rejected: numeric(values["Reject Qty"]),
+      reworked: numeric(values["Rework Qty"]),
+      errorStroke: numeric(values["Error Stroke"]),
+    },
+    costs: {
+      part: numeric(values["Part Cost"]),
+      component: numeric(values["Component Cost"]),
+      machinePerHour: numeric(values["Running Hrs Cost"]),
+      operatorPerHour: numeric(values["Operator Per Hrs Cost"]),
+    },
+    scrapPerPart: numeric(values["Scrap part"]),
+    qualityInterlock: clean(values["Quality Interlock"]),
+    processDependency: clean(values["Process Dependency"]),
+    proxy: clean(values.Proxy),
+    toolRequired: clean(values["Tool Yes/No"]),
+    issueCodes: [],
+    isValid: true,
+  };
+
+  addRequiredFieldIssues(issues, interval, {
+    machine,
+    shift,
+    date,
+    rawDate: values.Date,
+    start,
+    rawStart: values["From Time"],
+    end,
+    rawEnd: values["Till Time"],
+  });
+  if (crossMidnightInferred) {
+    addIssue(
+      issues,
+      interval,
+      "CROSS_MIDNIGHT_END_INFERRED",
+      "warning",
+      "Till Time was interpreted as the following day for a night-shift interval.",
+      "Till Time",
+    );
+  }
+  if (!partNumber && !productName) {
+    addIssue(
+      issues,
+      interval,
+      "MISSING_PRODUCT",
+      "warning",
+      "Part number and product name are both blank.",
+      "Product Name",
+    );
+  } else if (!productName) {
+    addIssue(
+      issues,
+      interval,
+      "MISSING_PRODUCT_NAME",
+      "warning",
+      "Product Name is blank.",
+      "Product Name",
+    );
+  }
+  if (operator.isMissing) {
+    addIssue(
+      issues,
+      interval,
+      "MISSING_OPERATOR",
+      "warning",
+      "Operator was not entered.",
+      "Operator",
+    );
+  }
+  if (!machineType) {
+    addIssue(
+      issues,
+      interval,
+      "MISSING_MACHINE_TYPE",
+      "warning",
+      "Machine Type was not entered.",
+      "Machine Type",
+    );
+  }
+
+  const durationFields: Array<[string, unknown, number | null]> = [
+    ["Shift Time", values["Shift Time"], interval.timesSeconds.shift],
+    ["Allowed Time", values["Allowed Time"], interval.timesSeconds.allowed],
+    ["Opr. Time", values["Opr. Time"], interval.timesSeconds.operative],
+    ["Non Opr. Time", values["Non Opr. Time"], interval.timesSeconds.nonOperative],
+    ["Down Time", values["Down Time"], interval.timesSeconds.downtime],
+    ["System Off", values["System Off"], interval.timesSeconds.systemOff],
+    ["Setup Time", values["Setup Time"], interval.timesSeconds.setup],
+    [
+      "Additional Over Time",
+      values["Additional Over Time"],
+      interval.timesSeconds.additionalOvertime,
+    ],
+    ["Prod Gap Between", values["Prod Gap Between"], interval.timesSeconds.productionGap],
+    ["Std. Cycle Time", values["Std. Cycle Time"], interval.cycleTimesSeconds.standard],
+    [
+      "Approved Cycle Time",
+      values["Approved Cycle Time"],
+      interval.cycleTimesSeconds.approved,
+    ],
+    [
+      "Achieve Cycle Time",
+      values["Achieve Cycle Time"],
+      interval.cycleTimesSeconds.achieved,
+    ],
+  ];
+  for (const [field, raw, parsed] of durationFields) {
+    addNumericIssue(issues, interval, raw, parsed, field, true);
+  }
+
+  const numericFields: Array<[string, unknown, number | null]> = [
+    ["M. Factor", values["M. Factor"], interval.quantities.multiplier],
+    ["Stroke", values.Stroke, interval.quantities.stroke],
+    ["Qty", values.Qty, interval.quantities.reported],
+    ["Shift Target", values["Shift Target"], interval.quantities.shiftTarget],
+    [
+      "Opr. Time Target",
+      values["Opr. Time Target"],
+      interval.quantities.operativeTimeTarget,
+    ],
+    ["Product Loss", values["Product Loss"], interval.quantities.productionLoss],
+    ["Reject Qty", values["Reject Qty"], interval.quantities.rejected],
+    ["Rework Qty", values["Rework Qty"], interval.quantities.reworked],
+    ["Error Stroke", values["Error Stroke"], interval.quantities.errorStroke],
+    ["Scrap part", values["Scrap part"], interval.scrapPerPart],
+  ];
+  for (const [field, raw, parsed] of numericFields) {
+    addNumericIssue(issues, interval, raw, parsed, field);
+  }
+
+  return interval;
+}
+
+function parseDowntimeEvent(row: SheetRow, issues: ValidationIssue[]): DowntimeEvent {
+  const values = row.values;
+  const machine = clean(values.Machine);
+  const shift = clean(values.Shift);
+  const date = parsedTimestamp(values.Date);
+  const start = parsedTimestamp(values["From Time"]);
+  const parsedEnd = parsedTimestamp(values["Till Time"]);
+  const { value: end, crossMidnightInferred } = normalizedIntervalEnd(
+    start,
+    parsedEnd,
+    shift,
+  );
+  const durationSeconds = clockDurationSeconds(values.Duration);
+  const reason = clean(values.Reason);
+  const reasonType = clean(values.Reason_Type);
+  const productName = clean(values["Product Name"]);
+  const operator = operatorReference(values["Operator Name"]);
+
+  const fingerprint = [
+    machine,
+    shift,
+    localIsoTimestamp(start),
+    localIsoTimestamp(end),
+    reasonType,
+    reason,
+  ].join("|");
+  const event: DowntimeEvent = {
+    id: recordId("DT", fingerprint),
+    sourceSheet: DOWNTIME_SHEET,
+    sourceRow: row.rowNumber,
+    date: date ? isoDay(date) : null,
+    startAt: localIsoTimestamp(start),
+    endAt: localIsoTimestamp(end),
+    startEpochMs: start?.getTime() ?? null,
+    endEpochMs: end?.getTime() ?? null,
+    durationSeconds,
+    machine,
+    shift,
+    productName,
+    operator,
+    reasonType,
+    reason,
+    isUnreported: normalized(reason) === "UNREPORTED",
+    reportedMachineHourLoss: numeric(values.Revenue),
+    issueCodes: [],
+    isValid: true,
+  };
+
+  addRequiredFieldIssues(issues, event, {
+    machine,
+    shift,
+    date,
+    rawDate: values.Date,
+    start,
+    rawStart: values["From Time"],
+    end,
+    rawEnd: values["Till Time"],
+  });
+  if (crossMidnightInferred) {
+    addIssue(
+      issues,
+      event,
+      "CROSS_MIDNIGHT_END_INFERRED",
+      "warning",
+      "Till Time was interpreted as the following day for a night-shift event.",
+      "Till Time",
+    );
+  }
+  addNumericIssue(issues, event, values.Duration, durationSeconds, "Duration", true);
+  addNumericIssue(
+    issues,
+    event,
+    values.Revenue,
+    event.reportedMachineHourLoss,
+    "Revenue",
+  );
+  if (!productName) {
+    addIssue(
+      issues,
+      event,
+      "MISSING_PRODUCT_NAME",
+      "warning",
+      "Product Name is blank.",
+      "Product Name",
+    );
+  }
+  if (operator.isMissing) {
+    addIssue(
+      issues,
+      event,
+      "MISSING_OPERATOR",
+      "warning",
+      "Operator was not entered.",
+      "Operator Name",
+    );
+  }
+  if (!reason) {
+    addIssue(
+      issues,
+      event,
+      "MISSING_REASON",
+      "warning",
+      "Downtime reason is blank.",
+      "Reason",
+    );
+  } else if (event.isUnreported) {
+    addIssue(
+      issues,
+      event,
+      "UNREPORTED_DOWNTIME",
+      "warning",
+      "Downtime reason is UNREPORTED.",
+      "Reason",
+    );
+  }
+
+  return event;
+}
+
+export function canonicalizeWorkbook(
+  workbook: XLSX.WorkBook,
+  fileName: string,
+): CanonicalMmsData {
+  const productRows = extractRows(workbook, PRODUCT_SHEET);
+  const downtimeRows = extractRows(workbook, DOWNTIME_SHEET);
+  const productDataRows = productRows.filter((row) => !isProductTotalRow(row));
+  const downtimeDataRows = downtimeRows.filter((row) => !isDowntimeTotalRow(row));
+  const validationIssues: ValidationIssue[] = [];
+
+  const productionIntervals = productDataRows.map((row) =>
+    parseProductionInterval(row, validationIssues),
+  );
+  const downtimeEvents = downtimeDataRows.map((row) =>
+    parseDowntimeEvent(row, validationIssues),
+  );
+
+  validateDuplicates(
+    productionIntervals,
+    validationIssues,
+    "DUPLICATE_PRODUCTION_INTERVAL",
+  );
+  validateDuplicates(downtimeEvents, validationIssues, "DUPLICATE_DOWNTIME_EVENT");
+  validateTimeline(
+    productionIntervals,
+    validationIssues,
+    "OVERLAPPING_PRODUCTION_INTERVAL",
+  );
+  validateTimeline(downtimeEvents, validationIssues, "OVERLAPPING_DOWNTIME_EVENT");
+  finalizeValidity([...productionIntervals, ...downtimeEvents], validationIssues);
+
+  return {
+    source: {
+      company:
+        clean(workbook.Sheets[workbook.SheetNames[0]]?.A1?.v) || "Imported MMS dataset",
+      fileName,
+      parsedAt: new Date().toISOString(),
+    },
+    productionIntervals,
+    downtimeEvents,
+    validationIssues,
+    importStats: {
+      productRowsRead: productRows.length,
+      downtimeRowsRead: downtimeRows.length,
+      productTotalRowsExcluded: productRows.length - productDataRows.length,
+      downtimeTotalRowsExcluded: downtimeRows.length - downtimeDataRows.length,
+      errorCount: validationIssues.filter((issue) => issue.severity === "error").length,
+      warningCount: validationIssues.filter((issue) => issue.severity === "warning").length,
+    },
+  };
+}
+
 const emptyAccumulator = (): Accumulator => ({
   production: 0,
   target: 0,
@@ -172,101 +1048,89 @@ const emptyAccumulator = (): Accumulator => ({
   unreportedEvents: 0,
 });
 
-export function summarizeWorkbook(workbook: XLSX.WorkBook, fileName: string): MmsSummary {
-  const productRows = extractRows(workbook, "Product Log Book").filter(
-    (row) => clean(row["Part No."]).toUpperCase() !== "TOTAL === >",
-  );
-  const downtimeRows = extractRows(workbook, "Down Time Details").filter(
-    (row) => clean(row.Shift).toUpperCase() !== "TOTAL",
-  );
+function canonicalDateRange(days: Array<string | null>): [string, string] {
+  const valid = days.filter((day): day is string => Boolean(day)).sort();
+  return valid.length ? [valid[0], valid.at(-1)!] : ["Not available", "Not available"];
+}
 
+export function summarizeCanonicalData(data: CanonicalMmsData): MmsSummary {
   const machines = new Map<string, Accumulator>();
   const shifts = new Map<string, Accumulator>();
   const months = new Map<string, Accumulator>();
   const days = new Map<string, Accumulator>();
-  const productDates: Date[] = [];
-  const downtimeDates: Date[] = [];
 
   const get = (map: Map<string, Accumulator>, key: string) => {
     if (!map.has(key)) map.set(key, emptyAccumulator());
     return map.get(key)!;
   };
 
-  for (const row of productRows) {
-    const machine = clean(row.Machine);
-    const shift = clean(row.Shift);
-    const date = parsedDate(row.Date);
-    const production = numeric(row.Qty) ?? 0;
-    const target = numeric(row["Shift Target"]) ?? 0;
-    if (!machine) continue;
+  for (const interval of data.productionIntervals) {
+    if (!interval.machine) continue;
+    const production =
+      interval.quantities.reported ?? interval.quantities.calculatedFromStroke ?? 0;
+    const target = interval.quantities.shiftTarget ?? 0;
 
-    const machineValue = get(machines, machine);
+    const machineValue = get(machines, interval.machine);
     machineValue.production += production;
     machineValue.target += target;
     machineValue.productRecords += 1;
 
-    const shiftValue = get(shifts, shift);
-    shiftValue.production += production;
-    shiftValue.target += target;
-
-    if (date) {
-      productDates.push(date);
-      const monthValue = get(months, monthKey(date));
+    if (interval.shift) {
+      const shiftValue = get(shifts, interval.shift);
+      shiftValue.production += production;
+      shiftValue.target += target;
+    }
+    if (interval.date) {
+      const monthValue = get(months, monthKey(interval.date));
       monthValue.production += production;
       monthValue.target += target;
-      const dayValue = get(days, isoDay(date));
+      const dayValue = get(days, interval.date);
       dayValue.production += production;
       dayValue.target += target;
     }
   }
 
-  let invalidDurations = 0;
-  for (const row of downtimeRows) {
-    const machine = clean(row.Machine);
-    const shift = clean(row.Shift);
-    const date = parsedDate(row.Date);
-    let duration = durationHours(row.Duration);
-    const revenueLoss = numeric(row.Revenue) ?? 0;
-    const unreported = clean(row.Reason).toUpperCase() === "UNREPORTED";
-    if (!machine) continue;
-    if (duration == null) {
-      duration = 0;
-      invalidDurations += 1;
-    }
+  for (const event of data.downtimeEvents) {
+    if (!event.machine) continue;
+    const durationHours = (event.durationSeconds ?? 0) / SECONDS_PER_HOUR;
+    const loss = event.reportedMachineHourLoss ?? 0;
 
-    const machineValue = get(machines, machine);
-    machineValue.downtimeHours += duration;
-    machineValue.revenueLoss += revenueLoss;
+    const machineValue = get(machines, event.machine);
+    machineValue.downtimeHours += durationHours;
+    machineValue.revenueLoss += loss;
     machineValue.downtimeEvents += 1;
-    if (unreported) machineValue.unreportedEvents += 1;
+    if (event.isUnreported) machineValue.unreportedEvents += 1;
 
-    const shiftValue = get(shifts, shift);
-    shiftValue.downtimeHours += duration;
-    shiftValue.revenueLoss += revenueLoss;
-
-    if (date) {
-      downtimeDates.push(date);
-      const monthValue = get(months, monthKey(date));
-      monthValue.downtimeHours += duration;
-      monthValue.revenueLoss += revenueLoss;
-      const dayValue = get(days, isoDay(date));
-      dayValue.downtimeHours += duration;
-      dayValue.revenueLoss += revenueLoss;
+    if (event.shift) {
+      const shiftValue = get(shifts, event.shift);
+      shiftValue.downtimeHours += durationHours;
+      shiftValue.revenueLoss += loss;
+    }
+    if (event.date) {
+      const monthValue = get(months, monthKey(event.date));
+      monthValue.downtimeHours += durationHours;
+      monthValue.revenueLoss += loss;
+      const dayValue = get(days, event.date);
+      dayValue.downtimeHours += durationHours;
+      dayValue.revenueLoss += loss;
     }
   }
 
-  const machineSummaries: MachineSummary[] = Array.from(machines, ([machine, value]) => ({
-    machine,
-    production: Math.round(value.production),
-    target: rounded(value.target),
-    attainment: value.target ? rounded((value.production / value.target) * 100) : null,
-    downtimeHours: rounded(value.downtimeHours),
-    revenueLoss: Math.round(value.revenueLoss),
-    downtimeEvents: value.downtimeEvents,
-    unreportedRate: value.downtimeEvents
-      ? rounded((value.unreportedEvents / value.downtimeEvents) * 100, 2)
-      : 0,
-  })).sort((a, b) => b.downtimeHours - a.downtimeHours);
+  const machineSummaries: MachineSummary[] = Array.from(
+    machines,
+    ([machine, value]) => ({
+      machine,
+      production: Math.round(value.production),
+      target: rounded(value.target),
+      attainment: value.target ? rounded((value.production / value.target) * 100) : null,
+      downtimeHours: rounded(value.downtimeHours),
+      revenueLoss: Math.round(value.revenueLoss),
+      downtimeEvents: value.downtimeEvents,
+      unreportedRate: value.downtimeEvents
+        ? rounded((value.unreportedEvents / value.downtimeEvents) * 100, 2)
+        : 0,
+    }),
+  ).sort((a, b) => b.downtimeHours - a.downtimeHours);
 
   const shiftSummaries: ShiftSummary[] = Array.from(shifts, ([shift, value]) => ({
     shift,
@@ -275,7 +1139,7 @@ export function summarizeWorkbook(workbook: XLSX.WorkBook, fileName: string): Mm
     attainment: value.target ? rounded((value.production / value.target) * 100) : null,
     downtimeHours: rounded(value.downtimeHours),
     revenueLoss: Math.round(value.revenueLoss),
-  })).filter((item) => item.shift);
+  }));
 
   const monthlySummaries: MonthlySummary[] = Array.from(months, ([month, value]) => ({
     month,
@@ -289,62 +1153,82 @@ export function summarizeWorkbook(workbook: XLSX.WorkBook, fileName: string): Mm
 
   const totalProduction = machineSummaries.reduce((sum, item) => sum + item.production, 0);
   const totalTarget = machineSummaries.reduce((sum, item) => sum + item.target, 0);
-  const downtimeHoursTotal = machineSummaries.reduce((sum, item) => sum + item.downtimeHours, 0);
-  const revenueLossTotal = machineSummaries.reduce((sum, item) => sum + item.revenueLoss, 0);
-  const unreported = downtimeRows.filter((row) => clean(row.Reason).toUpperCase() === "UNREPORTED").length;
+  const totalDowntimeHours = machineSummaries.reduce(
+    (sum, item) => sum + item.downtimeHours,
+    0,
+  );
+  const totalRevenueLoss = machineSummaries.reduce(
+    (sum, item) => sum + item.revenueLoss,
+    0,
+  );
 
   const latestDate = Array.from(days.keys()).sort().at(-1) ?? "";
   const latest = days.get(latestDate) ?? emptyAccumulator();
-  const latestMachineValues = new Map<string, number>();
-  for (const row of downtimeRows) {
-    const date = parsedDate(row.Date);
-    if (date && isoDay(date) === latestDate) {
-      const machine = clean(row.Machine);
-      latestMachineValues.set(machine, (latestMachineValues.get(machine) ?? 0) + (durationHours(row.Duration) ?? 0));
-    }
+  const latestMachineDowntime = new Map<string, number>();
+  for (const event of data.downtimeEvents) {
+    if (event.date !== latestDate || !event.machine) continue;
+    latestMachineDowntime.set(
+      event.machine,
+      (latestMachineDowntime.get(event.machine) ?? 0) +
+        (event.durationSeconds ?? 0) / SECONDS_PER_HOUR,
+    );
   }
   const [topDowntimeMachine = "Not available", topDowntimeMachineHours = 0] =
-    Array.from(latestMachineValues.entries()).sort((a, b) => b[1] - a[1])[0] ?? [];
+    Array.from(latestMachineDowntime.entries()).sort((a, b) => b[1] - a[1])[0] ?? [];
 
-  const range = (dates: Date[]): [string, string] => {
-    const sorted = dates.map((date) => date.getTime()).sort((a, b) => a - b);
-    return sorted.length
-      ? [isoDay(new Date(sorted[0])), isoDay(new Date(sorted.at(-1)!))]
-      : ["Not available", "Not available"];
-  };
+  const unreported = data.downtimeEvents.filter((event) => event.isUnreported).length;
+  const invalidDurations = data.validationIssues.filter(
+    (issue) => issue.code === "INVALID_DURATION" && issue.field === "Duration",
+  ).length;
 
   return {
     source: {
-      company: clean(workbook.Sheets[workbook.SheetNames[0]]?.A1?.v) || "Imported MMS dataset",
-      fileName,
-      generatedAt: new Date().toISOString(),
-      productDateRange: range(productDates),
-      downtimeDateRange: range(downtimeDates),
+      company: data.source.company,
+      fileName: data.source.fileName,
+      generatedAt: data.source.parsedAt,
+      productDateRange: canonicalDateRange(
+        data.productionIntervals.map((interval) => interval.date),
+      ),
+      downtimeDateRange: canonicalDateRange(
+        data.downtimeEvents.map((event) => event.date),
+      ),
     },
     overview: {
       machines: machineSummaries.length,
-      productRecords: productRows.length,
-      downtimeEvents: downtimeRows.length,
+      productRecords: data.productionIntervals.length,
+      downtimeEvents: data.downtimeEvents.length,
       totalProduction,
       totalTarget: rounded(totalTarget),
-      targetAttainment: totalTarget ? rounded((totalProduction / totalTarget) * 100) : null,
-      downtimeHours: rounded(downtimeHoursTotal),
-      reportedRevenueLoss: Math.round(revenueLossTotal),
+      targetAttainment: totalTarget
+        ? rounded((totalProduction / totalTarget) * 100)
+        : null,
+      downtimeHours: rounded(totalDowntimeHours),
+      reportedRevenueLoss: Math.round(totalRevenueLoss),
     },
     quality: {
       unreportedDowntimeEvents: unreported,
-      unreportedDowntimeRate: downtimeRows.length ? rounded((unreported / downtimeRows.length) * 100, 2) : 0,
-      missingProductRecords: productRows.filter((row) => missing(row["Product Name"])).length,
-      missingDowntimeProducts: downtimeRows.filter((row) => missing(row["Product Name"])).length,
-      noOperatorProductRecords: productRows.filter((row) =>
-        clean(row.Operator).toUpperCase().includes("NO OPERATOR"),
+      unreportedDowntimeRate: data.downtimeEvents.length
+        ? rounded((unreported / data.downtimeEvents.length) * 100, 2)
+        : 0,
+      missingProductRecords: data.productionIntervals.filter(
+        (interval) => !interval.product.partNumber && !interval.product.productName,
       ).length,
-      noOperatorDowntimeEvents: downtimeRows.filter((row) =>
-        clean(row["Operator Name"]).toUpperCase().includes("NO OPERATOR"),
+      missingDowntimeProducts: data.downtimeEvents.filter(
+        (event) => !event.productName,
+      ).length,
+      noOperatorProductRecords: data.productionIntervals.filter(
+        (interval) => interval.operator.isMissing,
+      ).length,
+      noOperatorDowntimeEvents: data.downtimeEvents.filter(
+        (event) => event.operator.isMissing,
       ).length,
       invalidDurations,
-      zeroRejectRecords: productRows.filter((row) => (numeric(row["Reject Qty"]) ?? 0) === 0).length,
-      zeroReworkRecords: productRows.filter((row) => (numeric(row["Rework Qty"]) ?? 0) === 0).length,
+      zeroRejectRecords: data.productionIntervals.filter(
+        (interval) => interval.quantities.rejected === 0,
+      ).length,
+      zeroReworkRecords: data.productionIntervals.filter(
+        (interval) => interval.quantities.reworked === 0,
+      ).length,
     },
     machines: machineSummaries,
     shifts: shiftSummaries,
@@ -353,7 +1237,9 @@ export function summarizeWorkbook(workbook: XLSX.WorkBook, fileName: string): Mm
       date: latestDate,
       production: Math.round(latest.production),
       target: rounded(latest.target),
-      attainment: latest.target ? rounded((latest.production / latest.target) * 100) : null,
+      attainment: latest.target
+        ? rounded((latest.production / latest.target) * 100)
+        : null,
       downtimeHours: rounded(latest.downtimeHours),
       reportedRevenueLoss: Math.round(latest.revenueLoss),
       topDowntimeMachine,
@@ -362,7 +1248,33 @@ export function summarizeWorkbook(workbook: XLSX.WorkBook, fileName: string): Mm
   };
 }
 
-export function parseMmsFile(buffer: ArrayBuffer, fileName: string): MmsSummary {
+export function summarizeWorkbook(
+  workbook: XLSX.WorkBook,
+  fileName: string,
+): MmsSummary {
+  return summarizeCanonicalData(canonicalizeWorkbook(workbook, fileName));
+}
+
+export function parseMmsCanonicalFile(
+  buffer: ArrayBuffer,
+  fileName: string,
+): CanonicalMmsData {
   const workbook = XLSX.read(buffer, { cellDates: true, type: "array" });
-  return summarizeWorkbook(workbook, fileName);
+  return canonicalizeWorkbook(workbook, fileName);
+}
+
+export function parseMmsFileWithRecords(
+  buffer: ArrayBuffer,
+  fileName: string,
+): { canonical: CanonicalMmsData; summary: MmsSummary } {
+  const canonical = parseMmsCanonicalFile(buffer, fileName);
+  return { canonical, summary: summarizeCanonicalData(canonical) };
+}
+
+/**
+ * Backwards-compatible dashboard API. Existing UI consumers continue to
+ * receive MmsSummary while future calculation phases can use canonical data.
+ */
+export function parseMmsFile(buffer: ArrayBuffer, fileName: string): MmsSummary {
+  return parseMmsFileWithRecords(buffer, fileName).summary;
 }
