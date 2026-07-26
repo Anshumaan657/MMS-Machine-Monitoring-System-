@@ -12,6 +12,7 @@ import * as XLSX from "xlsx";
 import {
   ExcelMmsDataSource,
   type MmsDataSource,
+  type MmsDataSourceKind,
 } from "./mms-data-source";
 import {
   getMmsFilterOptions,
@@ -21,6 +22,12 @@ import {
   createInitialMmsSyncState,
   MmsSynchronizationEngine,
 } from "./synchronization-engine";
+import {
+  DEFAULT_OPERATIONAL_ALERT_CONFIG,
+  OPERATIONAL_ALERT_LABELS,
+  buildOperationalAlerts,
+  normalizeOperationalAlertConfig,
+} from "./operational-alert-engine";
 import type {
   CanonicalMmsData,
   DowntimeAggregate,
@@ -29,6 +36,14 @@ import type {
   ProductionQueryAggregate,
 } from "./mms";
 import type {
+  AlertAcknowledgements,
+  AlertMetricValue,
+  OperationalAlert,
+  OperationalAlertConfig,
+  OperationalAlertSeverity,
+  OperationalAlertType,
+} from "./operational-alert-engine";
+import type {
   MmsSyncChanges,
   MmsSyncLogEntry,
   MmsSyncState,
@@ -36,6 +51,7 @@ import type {
 
 export type DashboardTab =
   | "overview"
+  | "alerts"
   | "downtime"
   | "data-quality"
   | "machines"
@@ -98,11 +114,66 @@ type SyncNotice = {
 };
 
 const SYNC_LOG_STORAGE_KEY = "mms-intelligence-sync-logs-v1";
+const ALERT_CONFIG_STORAGE_KEY = "mms-intelligence-alert-config-v1";
+const ALERT_ACKNOWLEDGEMENT_STORAGE_KEY =
+  "mms-intelligence-alert-acknowledgements-v1";
 const SYNC_POLL_INTERVAL_MS = 60_000;
 const SYNC_STALE_AFTER_MS = 5 * 60_000;
 
+const ALERT_THRESHOLD_FIELDS: Array<{
+  key: keyof OperationalAlertConfig["thresholds"];
+  label: string;
+  unit: string;
+  storedPerDisplayUnit: number;
+  step: number;
+}> = [
+  {
+    key: "excessiveDowntimeSeconds",
+    label: "Excessive downtime",
+    unit: "minutes",
+    storedPerDisplayUnit: 60,
+    step: 1,
+  },
+  {
+    key: "systemOffSeconds",
+    label: "System Off",
+    unit: "minutes",
+    storedPerDisplayUnit: 60,
+    step: 1,
+  },
+  {
+    key: "minimumProductionAttainment",
+    label: "Minimum production attainment",
+    unit: "percent",
+    storedPerDisplayUnit: 0.01,
+    step: 1,
+  },
+  {
+    key: "maximumCycleTimeRatio",
+    label: "Maximum cycle-time ratio",
+    unit: "× standard",
+    storedPerDisplayUnit: 1,
+    step: 0.05,
+  },
+  {
+    key: "highProductionLossQuantity",
+    label: "High production loss",
+    unit: "quantity",
+    storedPerDisplayUnit: 1,
+    step: 1,
+  },
+  {
+    key: "highMachineHourLoss",
+    label: "High machine-hour loss",
+    unit: "INR",
+    storedPerDisplayUnit: 1,
+    step: 100,
+  },
+];
+
 const NAVIGATION: NavigationItem[] = [
   { id: "overview", label: "Overview", shortLabel: "OV", icon: "⌁" },
+  { id: "alerts", label: "Operational Alerts", shortLabel: "AL", icon: "!" },
   { id: "downtime", label: "Downtime", shortLabel: "DT", icon: "↯" },
   { id: "data-quality", label: "Data Quality", shortLabel: "DQ", icon: "◇" },
   { id: "machines", label: "Machines", shortLabel: "MC", icon: "▦" },
@@ -163,6 +234,37 @@ function readStoredSyncLogs(): MmsSyncLogEntry[] {
 
 function syncNoticeMessage(changes: MmsSyncChanges): string {
   return `${changes.added} new, ${changes.modified} modified and ${changes.removed} removed records synchronized.`;
+}
+
+function readAlertConfig(): OperationalAlertConfig {
+  if (typeof window === "undefined") return DEFAULT_OPERATIONAL_ALERT_CONFIG;
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(ALERT_CONFIG_STORAGE_KEY) ?? "{}",
+    );
+    return normalizeOperationalAlertConfig(stored);
+  } catch {
+    return DEFAULT_OPERATIONAL_ALERT_CONFIG;
+  }
+}
+
+function readAlertAcknowledgements(): AlertAcknowledgements {
+  if (typeof window === "undefined") return {};
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(ALERT_ACKNOWLEDGEMENT_STORAGE_KEY) ?? "{}",
+    );
+    return stored && typeof stored === "object" ? stored : {};
+  } catch {
+    return {};
+  }
+}
+
+function formatAlertMetric(metric: AlertMetricValue): string {
+  if (typeof metric.value === "number") {
+    return `${numberFormat.format(metric.value)} ${metric.unit}`;
+  }
+  return `${metric.value ?? "Not available"} · ${metric.unit}`;
 }
 
 function byLabel<T extends { label: string }>(items: T[]): Map<string, T> {
@@ -389,6 +491,20 @@ export default function DashboardPage() {
   const [sourceMode, setSourceMode] = useState<
     "live-file" | "uploaded-snapshot" | null
   >(null);
+  const [sourceKind, setSourceKind] =
+    useState<MmsDataSourceKind>("excel");
+  const [alertConfig, setAlertConfig] = useState<OperationalAlertConfig>(
+    () => readAlertConfig(),
+  );
+  const [alertAcknowledgements, setAlertAcknowledgements] =
+    useState<AlertAcknowledgements>(() => readAlertAcknowledgements());
+  const [selectedAlertType, setSelectedAlertType] = useState<
+    OperationalAlertType | "All"
+  >("All");
+  const [selectedAlertSeverity, setSelectedAlertSeverity] = useState<
+    OperationalAlertSeverity | "All"
+  >("All");
+  const [showAcknowledgedAlerts, setShowAcknowledgedAlerts] = useState(true);
   const fileInput = useRef<HTMLInputElement>(null);
   const syncEngine = useRef<MmsSynchronizationEngine | null>(null);
   const noticeSequence = useRef(0);
@@ -411,6 +527,33 @@ export default function DashboardPage() {
       // Synchronization continues when device-local storage is unavailable.
     }
   }, [syncState.logs]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        ALERT_CONFIG_STORAGE_KEY,
+        JSON.stringify(alertConfig),
+      );
+    } catch {
+      // Alert calculation continues with in-memory configuration.
+    }
+  }, [alertConfig]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const bounded = Object.fromEntries(
+        Object.entries(alertAcknowledgements).slice(-2_000),
+      );
+      window.localStorage.setItem(
+        ALERT_ACKNOWLEDGEMENT_STORAGE_KEY,
+        JSON.stringify(bounded),
+      );
+    } catch {
+      // Acknowledgements remain available for the current browser session.
+    }
+  }, [alertAcknowledgements]);
 
   useEffect(() => {
     if (!syncNotice) return;
@@ -440,6 +583,78 @@ export default function DashboardPage() {
     () => (analytics ? buildMachineViews(analytics) : []),
     [analytics],
   );
+  const operationalAlerts = useMemo(
+    () =>
+      canonical
+        ? buildOperationalAlerts(canonical, alertConfig, {
+            acknowledgements: alertAcknowledgements,
+            synchronization: {
+              sourceKind,
+              sourceName: syncState.sourceName,
+              status: syncState.status,
+              lastAttemptAt: syncState.lastAttemptAt,
+              error: syncState.error,
+            },
+          })
+        : [],
+    [
+      alertAcknowledgements,
+      alertConfig,
+      canonical,
+      sourceKind,
+      syncState.error,
+      syncState.lastAttemptAt,
+      syncState.sourceName,
+      syncState.status,
+    ],
+  );
+  const scopedOperationalAlerts = useMemo(
+    () =>
+      operationalAlerts.filter((alert) => {
+        if (dateFrom && alert.date && alert.date < dateFrom) return false;
+        if (dateTo && alert.date && alert.date > dateTo) return false;
+        if (
+          selectedShift &&
+          alert.shift !== selectedShift &&
+          alert.shift !== "All shifts"
+        ) {
+          return false;
+        }
+        if (
+          selectedMachine &&
+          alert.machine !== selectedMachine &&
+          alert.machine !== "All machines"
+        ) {
+          return false;
+        }
+        return true;
+      }),
+    [
+      dateFrom,
+      dateTo,
+      operationalAlerts,
+      selectedMachine,
+      selectedShift,
+    ],
+  );
+  const visibleOperationalAlerts = useMemo(
+    () =>
+      scopedOperationalAlerts.filter(
+        (alert) =>
+          (selectedAlertType === "All" ||
+            alert.type === selectedAlertType) &&
+          (selectedAlertSeverity === "All" ||
+            alert.severity === selectedAlertSeverity) &&
+          (showAcknowledgedAlerts ||
+            alert.acknowledgementState === "unacknowledged"),
+      ),
+    [
+      scopedOperationalAlerts,
+      selectedAlertSeverity,
+      selectedAlertType,
+      showAcknowledgedAlerts,
+    ],
+  );
   const selectedMachineView =
     machines.find((machine) => machine.name === selectedMachineName) ??
     machines[0] ??
@@ -465,6 +680,7 @@ export default function DashboardPage() {
     setProcessing(true);
     setLoadError("");
     setSourceMode(mode);
+    setSourceKind(source.kind);
     if (!hadDataset) {
       setDateFrom("");
       setDateTo("");
@@ -550,6 +766,40 @@ export default function DashboardPage() {
     setDateTo("");
     setSelectedShift("");
     setSelectedMachine("");
+  }
+
+  function acknowledgeAlerts(alerts: OperationalAlert[]): void {
+    const acknowledgedAt = new Date().toISOString();
+    setAlertAcknowledgements((current) => {
+      const next = { ...current };
+      for (const alert of alerts) next[alert.id] = acknowledgedAt;
+      return Object.fromEntries(Object.entries(next).slice(-2_000));
+    });
+  }
+
+  function updateAlertThreshold(
+    key: keyof OperationalAlertConfig["thresholds"],
+    value: number,
+  ): void {
+    setAlertConfig((current) =>
+      normalizeOperationalAlertConfig({
+        ...current,
+        thresholds: {
+          ...current.thresholds,
+          [key]: value,
+        },
+      }),
+    );
+  }
+
+  function toggleAlertType(type: OperationalAlertType): void {
+    setAlertConfig((current) => ({
+      ...current,
+      enabled: {
+        ...current.enabled,
+        [type]: !current.enabled[type],
+      },
+    }));
   }
 
   function exportFilteredReport() {
@@ -822,8 +1072,16 @@ export default function DashboardPage() {
     ...dailyProduction.map((day) => day.totals.shiftTarget),
     1,
   );
-  const activeAlerts = machines.filter(
+  const machineAttentionCount = machines.filter(
     (machine) => machine.status === "Fault" || machine.status === "Warning",
+  ).length;
+  const unacknowledgedAlertCount = scopedOperationalAlerts.filter(
+    (alert) => alert.acknowledgementState === "unacknowledged",
+  ).length;
+  const criticalAlertCount = scopedOperationalAlerts.filter(
+    (alert) =>
+      alert.severity === "critical" &&
+      alert.acknowledgementState === "unacknowledged",
   ).length;
   const activeLabel =
     NAVIGATION.find((item) => item.id === activeTab)?.label ?? "Overview";
@@ -957,6 +1215,17 @@ export default function DashboardPage() {
 
         <Panel eyebrow="Command center" title="Filtered operational snapshot">
           <div className="quick-actions">
+            <button onClick={() => setActiveTab("alerts")}>
+              <span>!</span>
+              <div>
+                <strong>Operational alerts</strong>
+                <small>
+                  {unacknowledgedAlertCount} unacknowledged ·{" "}
+                  {criticalAlertCount} critical
+                </small>
+              </div>
+              <i>→</i>
+            </button>
             <button onClick={() => setActiveTab("downtime")}>
               <span>↯</span>
               <div>
@@ -985,7 +1254,7 @@ export default function DashboardPage() {
               <span>▦</span>
               <div>
                 <strong>Machine states</strong>
-                <small>{activeAlerts} assets require attention</small>
+                <small>{machineAttentionCount} assets require attention</small>
               </div>
               <i>→</i>
             </button>
@@ -1078,6 +1347,281 @@ export default function DashboardPage() {
       </div>
     </div>
   );
+
+  const renderAlerts = () => {
+    const acknowledgedCount = scopedOperationalAlerts.length -
+      unacknowledgedAlertCount;
+    const displayedAlerts = visibleOperationalAlerts.slice(0, 200);
+    return (
+      <div className="view-stack tab-enter">
+        <section className="section-intro alert-intro">
+          <div>
+            <span className="eyebrow">Operational response</span>
+            <h1>Alert center</h1>
+            <p>
+              Record-level operational conditions for the active date, shift
+              and machine selection. Every alert links back to its source row.
+            </p>
+          </div>
+          <button
+            className="button button-primary"
+            onClick={() =>
+              acknowledgeAlerts(
+                visibleOperationalAlerts
+                  .filter(
+                    (alert) =>
+                      alert.acknowledgementState === "unacknowledged",
+                  )
+                  .slice(0, 200),
+              )
+            }
+            disabled={unacknowledgedAlertCount === 0}
+          >
+            Acknowledge visible
+          </button>
+        </section>
+
+        <section className="kpi-grid alert-kpi-grid">
+          <KpiCard
+            label="Unacknowledged"
+            value={integerFormat.format(unacknowledgedAlertCount)}
+            detail="Active alerts awaiting review"
+            tone="rose"
+          />
+          <KpiCard
+            label="Critical"
+            value={integerFormat.format(criticalAlertCount)}
+            detail="Unacknowledged critical conditions"
+            tone="amber"
+          />
+          <KpiCard
+            label="Acknowledged"
+            value={integerFormat.format(acknowledgedCount)}
+            detail="Reviewed on this device"
+            tone="emerald"
+          />
+          <KpiCard
+            label="Total active"
+            value={integerFormat.format(scopedOperationalAlerts.length)}
+            detail="Alerts in the current global scope"
+            tone="indigo"
+          />
+        </section>
+
+        <section className="alert-toolbar glass-panel">
+          <label>
+            <span>Alert type</span>
+            <select
+              value={selectedAlertType}
+              onChange={(event) =>
+                setSelectedAlertType(
+                  event.target.value as OperationalAlertType | "All",
+                )
+              }
+            >
+              <option value="All">All alert types</option>
+              {(
+                Object.entries(OPERATIONAL_ALERT_LABELS) as Array<
+                  [OperationalAlertType, string]
+                >
+              ).map(([type, label]) => (
+                <option key={type} value={type}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Severity</span>
+            <select
+              value={selectedAlertSeverity}
+              onChange={(event) =>
+                setSelectedAlertSeverity(
+                  event.target.value as OperationalAlertSeverity | "All",
+                )
+              }
+            >
+              <option value="All">All severities</option>
+              <option value="critical">Critical</option>
+              <option value="warning">Warning</option>
+            </select>
+          </label>
+          <label className="alert-checkbox">
+            <input
+              type="checkbox"
+              checked={showAcknowledgedAlerts}
+              onChange={(event) =>
+                setShowAcknowledgedAlerts(event.target.checked)
+              }
+            />
+            <span>Show acknowledged alerts</span>
+          </label>
+          <div className="filter-result">
+            <span>Displaying</span>
+            <strong>
+              {integerFormat.format(
+                Math.min(visibleOperationalAlerts.length, 200),
+              )}{" "}
+              of {integerFormat.format(visibleOperationalAlerts.length)}
+            </strong>
+          </div>
+        </section>
+
+        <div className="alert-layout">
+          <Panel
+            eyebrow="Active conditions"
+            title="Supporting operational records"
+          >
+            {displayedAlerts.length ? (
+              <div className="operational-alert-list">
+                {displayedAlerts.map((alert) => (
+                  <article
+                    key={alert.id}
+                    className={`operational-alert alert-${alert.severity} ${
+                      alert.acknowledgementState === "acknowledged"
+                        ? "alert-acknowledged"
+                        : ""
+                    }`}
+                  >
+                    <div className="alert-record-head">
+                      <div>
+                        <span>{alert.type.replaceAll("_", " ")}</span>
+                        <strong>{alert.title}</strong>
+                      </div>
+                      <span className={`alert-severity ${alert.severity}`}>
+                        {alert.severity}
+                      </span>
+                    </div>
+                    <p>{alert.message}</p>
+                    <div className="alert-context-grid">
+                      <span>
+                        <small>Machine</small>
+                        <strong>{alert.machine}</strong>
+                      </span>
+                      <span>
+                        <small>Shift</small>
+                        <strong>{alert.shift}</strong>
+                      </span>
+                      <span>
+                        <small>Time</small>
+                        <strong>{readableTimestamp(alert.time)}</strong>
+                      </span>
+                      <span>
+                        <small>Triggering value</small>
+                        <strong>
+                          {formatAlertMetric(alert.triggeringValue)}
+                        </strong>
+                      </span>
+                      <span>
+                        <small>Threshold</small>
+                        <strong>{formatAlertMetric(alert.threshold)}</strong>
+                      </span>
+                      <span>
+                        <small>Supporting record</small>
+                        <strong>
+                          {alert.supportingRecord.sheet}
+                          {alert.supportingRecord.rowNumber == null
+                            ? ""
+                            : ` · row ${alert.supportingRecord.rowNumber}`}
+                        </strong>
+                      </span>
+                    </div>
+                    <footer>
+                      <span>
+                        Status: {alert.status} ·{" "}
+                        {alert.acknowledgementState}
+                      </span>
+                      {alert.acknowledgementState === "unacknowledged" ? (
+                        <button
+                          className="button button-secondary"
+                          onClick={() => acknowledgeAlerts([alert])}
+                        >
+                          Acknowledge
+                        </button>
+                      ) : (
+                        <small>
+                          Acknowledged{" "}
+                          {readableTimestamp(alert.acknowledgedAt)}
+                        </small>
+                      )}
+                    </footer>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="panel-note">
+                No operational alerts match the current filters.
+              </p>
+            )}
+          </Panel>
+
+          <aside>
+            <details className="alert-settings glass-panel" open>
+              <summary>Alert thresholds</summary>
+              <p>
+                Settings are stored only on this browser and apply to every
+                compatible MMS workbook.
+              </p>
+              <div className="alert-threshold-grid">
+                {ALERT_THRESHOLD_FIELDS.map((field) => (
+                  <label key={field.key}>
+                    <span>{field.label}</span>
+                    <div>
+                      <input
+                        type="number"
+                        min="0"
+                        step={field.step}
+                        value={
+                          alertConfig.thresholds[field.key] /
+                          field.storedPerDisplayUnit
+                        }
+                        onChange={(event) =>
+                          updateAlertThreshold(
+                            field.key,
+                            Number(event.target.value) *
+                              field.storedPerDisplayUnit,
+                          )
+                        }
+                      />
+                      <small>{field.unit}</small>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              <button
+                className="button button-secondary"
+                onClick={() =>
+                  setAlertConfig(DEFAULT_OPERATIONAL_ALERT_CONFIG)
+                }
+              >
+                Restore defaults
+              </button>
+            </details>
+
+            <details className="alert-settings glass-panel">
+              <summary>Enabled alert rules</summary>
+              <div className="alert-rule-list">
+                {(
+                  Object.entries(OPERATIONAL_ALERT_LABELS) as Array<
+                    [OperationalAlertType, string]
+                  >
+                ).map(([type, label]) => (
+                  <label key={type}>
+                    <input
+                      type="checkbox"
+                      checked={alertConfig.enabled[type]}
+                      onChange={() => toggleAlertType(type)}
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </div>
+            </details>
+          </aside>
+        </div>
+      </div>
+    );
+  };
 
   const renderDowntime = () => {
     const downtime = analytics.downtime;
@@ -1736,6 +2280,15 @@ export default function DashboardPage() {
             <strong>{activeLabel}</strong>
           </div>
           <div className="topbar-actions">
+            <button
+              className="topbar-alert-count"
+              onClick={() => setActiveTab("alerts")}
+              aria-label={`${unacknowledgedAlertCount} unacknowledged operational alerts`}
+            >
+              <span>!</span>
+              <strong>{integerFormat.format(unacknowledgedAlertCount)}</strong>
+              <small>alerts</small>
+            </button>
             <div className={`dataset-health sync-${syncState.status}`}>
               <i />
               <span>
@@ -1911,6 +2464,7 @@ export default function DashboardPage() {
         <main className="dashboard-content">
           <div className="content-frame">
             {activeTab === "overview" ? renderOverview() : null}
+            {activeTab === "alerts" ? renderAlerts() : null}
             {activeTab === "downtime" ? renderDowntime() : null}
             {activeTab === "data-quality" ? renderDataQuality() : null}
             {activeTab === "machines" ? renderMachines() : null}

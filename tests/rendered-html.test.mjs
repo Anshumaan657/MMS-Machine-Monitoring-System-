@@ -39,7 +39,15 @@ test("server-renders the MMS application shell", async () => {
 });
 
 test("contains the functional dashboard, query engine, and report export", async () => {
-  const [page, layout, packageJson, parser, queryEngine, syncEngine] =
+  const [
+    page,
+    layout,
+    packageJson,
+    parser,
+    queryEngine,
+    syncEngine,
+    alertEngine,
+  ] =
     await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -47,6 +55,7 @@ test("contains the functional dashboard, query engine, and report export", async
     readFile(new URL("../app/mms.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/analytics-query-engine.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/synchronization-engine.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/operational-alert-engine.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /Connect workbook/);
@@ -69,6 +78,11 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(page, /Sync now/);
   assert.match(page, /Resume/);
   assert.match(page, /Sync logs/);
+  assert.match(page, /Operational Alerts/);
+  assert.match(page, /Alert center/);
+  assert.match(page, /Acknowledge visible/);
+  assert.match(page, /Alert thresholds/);
+  assert.match(page, /Supporting record/);
   assert.doesNotMatch(page, /temperature:\s*number/i);
   assert.doesNotMatch(page, /vibration:\s*number/i);
   assert.doesNotMatch(page, /rpm:\s*number/i);
@@ -87,6 +101,17 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(syncEngine, /lastSuccessfulSyncAt/);
   assert.match(syncEngine, /duplicateKeys/);
   assert.match(syncEngine, /staleAfterMs/);
+  assert.match(alertEngine, /EXCESSIVE_DOWNTIME/);
+  assert.match(alertEngine, /SYSTEM_OFF/);
+  assert.match(alertEngine, /PRODUCTION_BELOW_TARGET/);
+  assert.match(alertEngine, /ABNORMAL_CYCLE_TIME/);
+  assert.match(alertEngine, /HIGH_PRODUCTION_LOSS/);
+  assert.match(alertEngine, /HIGH_MACHINE_HOUR_LOSS/);
+  assert.match(alertEngine, /MISSING_MACHINE_DATA/);
+  assert.match(alertEngine, /MISSING_OPERATOR/);
+  assert.match(alertEngine, /MISSING_DOWNTIME_REASON/);
+  assert.match(alertEngine, /INVALID_DURATION/);
+  assert.match(alertEngine, /DATABASE_SYNC_FAILURE/);
 
   await assert.rejects(
     access(new URL("../app/_sites-preview/SkeletonPreview.tsx", templateRoot)),
