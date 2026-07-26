@@ -28,6 +28,15 @@ import {
   buildOperationalAlerts,
   normalizeOperationalAlertConfig,
 } from "./operational-alert-engine";
+import {
+  buildDeterministicManagementSummary,
+  buildVerifiedManagementEvidence,
+  managementEvidenceMap,
+  type EvidenceBackedStatement,
+  type ManagementRecommendation,
+  type ManagementSummary,
+  type VerifiedManagementEvidence,
+} from "./management-summary-engine";
 import type {
   CanonicalMmsData,
   DowntimeAggregate,
@@ -113,6 +122,11 @@ type SyncNotice = {
   message: string;
 };
 
+type ManagementSummaryApiResponse = {
+  summary: ManagementSummary;
+  fallbackReason: string | null;
+};
+
 const SYNC_LOG_STORAGE_KEY = "mms-intelligence-sync-logs-v1";
 const ALERT_CONFIG_STORAGE_KEY = "mms-intelligence-alert-config-v1";
 const ALERT_ACKNOWLEDGEMENT_STORAGE_KEY =
@@ -179,6 +193,49 @@ const NAVIGATION: NavigationItem[] = [
   { id: "machines", label: "Machines", shortLabel: "MC", icon: "▦" },
   { id: "daily-report", label: "Daily Report", shortLabel: "DR", icon: "▤" },
 ];
+
+function EvidenceChips({
+  statement,
+  evidence,
+}: {
+  statement: EvidenceBackedStatement | ManagementRecommendation;
+  evidence: VerifiedManagementEvidence;
+}) {
+  const lookup = managementEvidenceMap(evidence);
+  return (
+    <div className="summary-evidence">
+      {statement.evidenceIds.map((id) => {
+        const item = lookup.get(id);
+        return item ? (
+          <span key={id} title={`${item.label} · ${id}`}>
+            <b>{item.label}</b>
+            {item.display}
+          </span>
+        ) : null;
+      })}
+    </div>
+  );
+}
+
+function SummaryStatements({
+  statements,
+  evidence,
+}: {
+  statements: EvidenceBackedStatement[];
+  evidence: VerifiedManagementEvidence;
+}) {
+  if (!statements.length) return <p className="summary-empty">No finding.</p>;
+  return (
+    <div className="summary-statement-list">
+      {statements.map((statement, index) => (
+        <article key={`${statement.text}-${index}`}>
+          <p>{statement.text}</p>
+          <EvidenceChips statement={statement} evidence={evidence} />
+        </article>
+      ))}
+    </div>
+  );
+}
 
 const numberFormat = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 2,
@@ -505,6 +562,11 @@ export default function DashboardPage() {
     OperationalAlertSeverity | "All"
   >("All");
   const [showAcknowledgedAlerts, setShowAcknowledgedAlerts] = useState(true);
+  const [aiManagementSummary, setAiManagementSummary] =
+    useState<ManagementSummary | null>(null);
+  const [managementSummaryLoading, setManagementSummaryLoading] =
+    useState(false);
+  const [managementSummaryNotice, setManagementSummaryNotice] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const syncEngine = useRef<MmsSynchronizationEngine | null>(null);
   const noticeSequence = useRef(0);
@@ -578,6 +640,17 @@ export default function DashboardPage() {
           })
         : null,
     [canonical, dateFrom, dateTo, selectedMachine, selectedShift],
+  );
+  const managementEvidence = useMemo(
+    () => (analytics ? buildVerifiedManagementEvidence(analytics) : null),
+    [analytics],
+  );
+  const deterministicManagementSummary = useMemo(
+    () =>
+      managementEvidence
+        ? buildDeterministicManagementSummary(managementEvidence)
+        : null,
+    [managementEvidence],
   );
   const machines = useMemo(
     () => (analytics ? buildMachineViews(analytics) : []),
@@ -669,6 +742,44 @@ export default function DashboardPage() {
           machine.id.toLowerCase().includes(search)),
     );
   }, [machineSearch, machineStatus, machines]);
+
+  async function requestAiManagementSummary(): Promise<void> {
+    if (!managementEvidence) return;
+    setManagementSummaryLoading(true);
+    setManagementSummaryNotice("");
+    try {
+      const response = await fetch("/api/management-summary", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ evidence: managementEvidence }),
+      });
+      const result = (await response.json()) as
+        | ManagementSummaryApiResponse
+        | { error?: string };
+      if (!response.ok || !("summary" in result)) {
+        throw new Error(
+          "error" in result && result.error
+            ? result.error
+            : "Management summary request failed.",
+        );
+      }
+      setAiManagementSummary(result.summary);
+      setManagementSummaryNotice(
+        result.fallbackReason
+          ? `Verified deterministic fallback used: ${result.fallbackReason}`
+          : "AI narrative validated against the verified evidence contract.",
+      );
+    } catch (error) {
+      setAiManagementSummary(null);
+      setManagementSummaryNotice(
+        `Verified deterministic fallback used: ${
+          error instanceof Error ? error.message : "AI service unavailable."
+        }`,
+      );
+    } finally {
+      setManagementSummaryLoading(false);
+    }
+  }
 
   function startSynchronization(
     source: MmsDataSource,
@@ -2071,6 +2182,10 @@ export default function DashboardPage() {
       ...shiftOee.keys(),
       ...shiftDowntime.keys(),
     ]);
+    const managementSummary =
+      aiManagementSummary?.evidenceDigest === managementEvidence?.evidenceDigest
+        ? aiManagementSummary
+        : deterministicManagementSummary;
     return (
       <div className="view-stack tab-enter">
         <section className="section-intro report-intro">
@@ -2174,50 +2289,93 @@ export default function DashboardPage() {
             </div>
           </Panel>
 
-          <Panel eyebrow="Executive brief" title="Management summary">
-            <div className="management-brief">
-              <span className="brief-date">{selectedScope}</span>
-              <p>
-                Production reached{" "}
-                <strong>
-                  {integerFormat.format(
-                    analytics.production.totals.producedQuantity,
+          <Panel
+            eyebrow="Executive brief"
+            title="Evidence-backed management summary"
+            action={
+              <button
+                className="button button-secondary summary-generate-button"
+                disabled={managementSummaryLoading}
+                onClick={() => void requestAiManagementSummary()}
+              >
+                {managementSummaryLoading ? "Validating…" : "Generate AI narrative"}
+              </button>
+            }
+          >
+            {managementSummary && managementEvidence ? (
+              <div className="management-brief">
+                <div className="summary-meta">
+                  <span className="brief-date">{selectedScope}</span>
+                  <span
+                    className={`summary-source ${managementSummary.source}`}
+                  >
+                    {managementSummary.source === "ai"
+                      ? `AI · ${managementSummary.model}`
+                      : "Verified deterministic"}
+                  </span>
+                </div>
+                <h3>{managementSummary.title}</h3>
+                <SummaryStatements
+                  statements={managementSummary.executiveSummary}
+                  evidence={managementEvidence}
+                />
+
+                <details className="summary-details" open>
+                  <summary>Production losses and comparisons</summary>
+                  <SummaryStatements
+                    statements={[
+                      ...managementSummary.productionLosses,
+                      ...managementSummary.comparisons,
+                    ]}
+                    evidence={managementEvidence}
+                  />
+                </details>
+                <details className="summary-details">
+                  <summary>Bottlenecks and downtime concentration</summary>
+                  <SummaryStatements
+                    statements={managementSummary.bottlenecks}
+                    evidence={managementEvidence}
+                  />
+                </details>
+                <details className="summary-details">
+                  <summary>Data reliability</summary>
+                  <SummaryStatements
+                    statements={managementSummary.dataCaveats}
+                    evidence={managementEvidence}
+                  />
+                </details>
+                <div className="summary-recommendations">
+                  <strong>Evidence-backed recommendations</strong>
+                  {managementSummary.recommendations.map(
+                    (recommendation, index) => (
+                      <article key={`${recommendation.text}-${index}`}>
+                        <span className={`priority-${recommendation.priority}`}>
+                          {recommendation.priority}
+                        </span>
+                        <p>{recommendation.text}</p>
+                        <EvidenceChips
+                          statement={recommendation}
+                          evidence={managementEvidence}
+                        />
+                      </article>
+                    ),
                   )}
-                </strong>{" "}
-                against a target of{" "}
-                <strong>
-                  {integerFormat.format(
-                    analytics.production.totals.shiftTarget,
-                  )}
-                </strong>
-                .
-              </p>
-              <p>
-                Availability is <strong>{percent(periodOee.availability)}</strong>{" "}
-                and Performance is{" "}
-                <strong>{percent(periodOee.performance)}</strong>.
-              </p>
-              <p>
-                Calculated machine-hour loss is{" "}
-                <strong>
-                  {currencyFormat.format(
-                    analytics.downtime.period.totals
-                      .calculatedMachineHourLoss,
-                  )}
-                </strong>
-                .
-              </p>
-              <div className="brief-warning">
-                <i>!</i>
-                <span>
-                  Quality and Final OEE remain pending.{" "}
-                  {integerFormat.format(
-                    analytics.dataQuality.unreportedDowntimeEvents,
-                  )}{" "}
-                  downtime events are unreported.
-                </span>
+                </div>
+                <div className="brief-warning">
+                  <i>!</i>
+                  <span>
+                    Official Quality and Final OEE claims remain excluded.
+                    The AI is not permitted to calculate figures; exact values
+                    are rendered only from verified evidence.
+                  </span>
+                </div>
+                {managementSummaryNotice ? (
+                  <p className="summary-notice" role="status">
+                    {managementSummaryNotice}
+                  </p>
+                ) : null}
               </div>
-            </div>
+            ) : null}
           </Panel>
         </div>
       </div>

@@ -47,6 +47,9 @@ test("contains the functional dashboard, query engine, and report export", async
     queryEngine,
     syncEngine,
     alertEngine,
+    managementSummaryEngine,
+    managementSummaryProvider,
+    managementSummaryRoute,
   ] =
     await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -56,6 +59,9 @@ test("contains the functional dashboard, query engine, and report export", async
     readFile(new URL("../app/analytics-query-engine.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/synchronization-engine.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/operational-alert-engine.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/management-summary-engine.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/ai-management-summary-provider.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/management-summary/route.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /Connect workbook/);
@@ -83,6 +89,9 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(page, /Acknowledge visible/);
   assert.match(page, /Alert thresholds/);
   assert.match(page, /Supporting record/);
+  assert.match(page, /Evidence-backed management summary/);
+  assert.match(page, /Generate AI narrative/);
+  assert.match(page, /Official Quality and Final OEE claims remain excluded/);
   assert.doesNotMatch(page, /temperature:\s*number/i);
   assert.doesNotMatch(page, /vibration:\s*number/i);
   assert.doesNotMatch(page, /rpm:\s*number/i);
@@ -112,6 +121,13 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(alertEngine, /MISSING_DOWNTIME_REASON/);
   assert.match(alertEngine, /INVALID_DURATION/);
   assert.match(alertEngine, /DATABASE_SYNC_FAILURE/);
+  assert.match(managementSummaryEngine, /buildVerifiedManagementEvidence/);
+  assert.match(managementSummaryEngine, /rawRecordsIncluded:\s*false/);
+  assert.match(managementSummaryEngine, /buildDeterministicManagementSummary/);
+  assert.match(managementSummaryProvider, /Never calculate/);
+  assert.match(managementSummaryProvider, /json_schema/);
+  assert.match(managementSummaryProvider, /numeric claim/);
+  assert.match(managementSummaryRoute, /OPENAI_API_KEY/);
 
   await assert.rejects(
     access(new URL("../app/_sites-preview/SkeletonPreview.tsx", templateRoot)),
