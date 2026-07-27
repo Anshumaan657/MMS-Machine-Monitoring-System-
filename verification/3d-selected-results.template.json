@@ -1,0 +1,21 @@
+{
+  "cases": [
+    {
+      "id": "replace-with-machine-shift-date",
+      "filters": {
+        "dateFrom": "YYYY-MM-DD",
+        "dateTo": "YYYY-MM-DD",
+        "shift": "Exact MMS shift name",
+        "machine": "Exact MMS machine name"
+      },
+      "expected": {
+        "production": 0,
+        "shiftTarget": 0,
+        "availabilityPercent": 0,
+        "performancePercent": 0,
+        "downtimeHours": 0,
+        "machineHourLoss": 0
+      }
+    }
+  ]
+}

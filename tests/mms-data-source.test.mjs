@@ -213,7 +213,7 @@ function comparable(data) {
 test("database and Excel sources produce equivalent canonical analytics", async () => {
   const requests = [];
   const databaseClient = {
-    technology: "TestSQL",
+    technology: "MySQL",
     async select(request) {
       requests.push(request);
       if (request.table === "mms.production_log") {
@@ -228,7 +228,7 @@ test("database and Excel sources produce equivalent canonical analytics", async 
   const database = new MmsDatabaseDataSource({
     client: databaseClient,
     company: "Parity Factory",
-    sourceName: "TestSQL read-only MMS database",
+    sourceName: "MySQL read-only MMS database",
     now: () => new Date("2026-07-25T00:00:00.000Z"),
     schema: {
       production: {
@@ -343,15 +343,16 @@ test("database environment requires explicit read-only mode and redacts password
 
   const config = loadReadonlyMmsDatabaseEnvironment({
     MMS_DB_READ_ONLY: "true",
-    MMS_DB_TECHNOLOGY: "PostgreSQL",
+    MMS_DB_TECHNOLOGY: "MySQL",
     MMS_DB_HOST: "mms.internal",
-    MMS_DB_PORT: "5432",
+    MMS_DB_PORT: "3306",
     MMS_DB_NAME: "mms",
     MMS_DB_USERNAME: "mms_analytics_ro",
     MMS_DB_PASSWORD: "secret",
     MMS_DB_SSL: "true",
   });
-  assert.equal(config.port, 5432);
+  assert.equal(config.port, 3306);
+  assert.equal(config.technology, "MySQL");
   assert.equal(config.ssl, true);
   assert.equal(config.password, "secret");
   assert.deepEqual(describeReadonlyMmsDatabaseEnvironment(config), {

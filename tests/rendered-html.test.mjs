@@ -50,6 +50,8 @@ test("contains the functional dashboard, query engine, and report export", async
     managementSummaryEngine,
     managementSummaryProvider,
     managementSummaryRoute,
+    reportExport,
+    verificationEngine,
   ] =
     await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -62,6 +64,8 @@ test("contains the functional dashboard, query engine, and report export", async
     readFile(new URL("../app/management-summary-engine.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/ai-management-summary-provider.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/management-summary/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/report-export.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/verification-engine.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /Connect workbook/);
@@ -71,12 +75,7 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(page, /Final OEE/);
   assert.match(page, /Pending/);
   assert.match(page, /Export Excel \(\.xlsx\)/);
-  assert.match(page, /XLSX\.writeFile/);
-  assert.match(page, /Machine Performance/);
-  assert.match(page, /Shift Performance/);
-  assert.match(page, /Downtime Events/);
-  assert.match(page, /Financial Losses/);
-  assert.match(page, /Rejection Rework Scrap/);
+  assert.match(page, /downloadFilteredReport/);
   assert.match(page, /queryMmsAnalytics/);
   assert.match(page, /ExcelMmsDataSource/);
   assert.match(page, /showOpenFilePicker/);
@@ -128,6 +127,15 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(managementSummaryProvider, /json_schema/);
   assert.match(managementSummaryProvider, /numeric claim/);
   assert.match(managementSummaryRoute, /OPENAI_API_KEY/);
+  assert.match(reportExport, /buildFilteredReportWorkbook/);
+  assert.match(reportExport, /XLSX\.writeFile/);
+  assert.match(reportExport, /Machine Performance/);
+  assert.match(reportExport, /Shift Performance/);
+  assert.match(reportExport, /Downtime Events/);
+  assert.match(reportExport, /Financial Losses/);
+  assert.match(reportExport, /Rejection Rework Scrap/);
+  assert.match(verificationEngine, /buildMmsVerificationReport/);
+  assert.match(verificationEngine, /final3dSignoffRequired:\s*true/);
 
   await assert.rejects(
     access(new URL("../app/_sites-preview/SkeletonPreview.tsx", templateRoot)),
