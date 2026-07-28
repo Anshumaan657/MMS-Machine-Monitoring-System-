@@ -416,13 +416,14 @@ export class MmsSynchronizationEngine {
       const stale =
         lastSuccess != null &&
         failedAt.getTime() - lastSuccess >= this.#staleAfterMs;
+      const synchronizationError = errorMessage(finalError);
       this.#state = {
         ...this.#state,
         status: stale ? "stale" : "error",
         consecutiveFailures: this.#state.consecutiveFailures + 1,
-        error: errorMessage(finalError),
+        error: synchronizationError,
       };
-      this.#addLog("error", this.#state.error);
+      this.#addLog("error", synchronizationError);
       this.#emit();
       return;
     }
