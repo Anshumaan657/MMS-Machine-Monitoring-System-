@@ -15,8 +15,8 @@ function isVerifiedEvidence(value: unknown): value is VerifiedManagementEvidence
     candidate.policy?.calculationsAllowed === false &&
     candidate.policy?.rawRecordsIncluded === false &&
     candidate.policy?.evidenceReferencesRequired === true &&
-    candidate.pendingClaims?.[0] === "Quality" &&
-    candidate.pendingClaims?.[1] === "Final OEE" &&
+    Array.isArray(candidate.pendingClaims) &&
+    candidate.pendingClaims.every((claim) => typeof claim === "string") &&
     candidate.facts.every(
       (fact) =>
         fact != null &&

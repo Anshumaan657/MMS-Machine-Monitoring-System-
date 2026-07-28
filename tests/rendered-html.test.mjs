@@ -73,7 +73,7 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(page, /Calculated production loss/);
   assert.match(page, /Management summary/);
   assert.match(page, /Final OEE/);
-  assert.match(page, /Pending/);
+  assert.match(page, /3D-confirmed calculation/);
   assert.match(page, /Export Excel \(\.xlsx\)/);
   assert.match(page, /downloadFilteredReport/);
   assert.match(page, /queryMmsAnalytics/);
@@ -90,7 +90,7 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(page, /Supporting record/);
   assert.match(page, /Evidence-backed management summary/);
   assert.match(page, /Generate AI narrative/);
-  assert.match(page, /Official Quality and Final OEE claims remain excluded/);
+  assert.match(page, /Quality and Final OEE use the 3D-confirmed calculation/);
   assert.doesNotMatch(page, /temperature:\s*number/i);
   assert.doesNotMatch(page, /vibration:\s*number/i);
   assert.doesNotMatch(page, /rpm:\s*number/i);

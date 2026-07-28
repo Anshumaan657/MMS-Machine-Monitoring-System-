@@ -48,6 +48,14 @@ export function buildFilteredReportWorkbook({
     ["Date to", analytics.scope.dateTo ?? "All"],
     ["Shift", selectedShift || "All"],
     ["Machine", selectedMachine || "All"],
+    ["Calculation policy", analytics.calculationPolicy.id],
+    ["Policy version", analytics.calculationPolicy.version],
+    ["Policy status", analytics.calculationPolicy.status],
+    ["Policy description", analytics.calculationPolicy.description],
+    [
+      "Policy warning",
+      analytics.calculationPolicy.warning ?? "Confirmed production policy",
+    ],
     [],
     ["Metric", "Value", "Unit / status"],
     ["Production", analytics.production.totals.producedQuantity, "Quantity"],
@@ -67,8 +75,20 @@ export function buildFilteredReportWorkbook({
       period.performance == null ? "Not available" : period.performance * 100,
       "Percent",
     ],
-    ["Quality", "Pending", "Not used in Final OEE"],
-    ["Final OEE", "Pending", "Not calculated"],
+    [
+      "Quality",
+      analytics.oee.period.quality == null
+        ? "Not available"
+        : analytics.oee.period.quality * 100,
+      "Percent",
+    ],
+    [
+      "Final OEE",
+      analytics.oee.period.finalOee == null
+        ? "Not available"
+        : analytics.oee.period.finalOee * 100,
+      "Percent",
+    ],
     [
       "Downtime",
       hours(analytics.downtime.period.totals.downtimeSeconds),
@@ -105,6 +125,7 @@ export function buildFilteredReportWorkbook({
   );
   const downtimeByMachine = byLabel(analytics.downtime.machineWise);
   const qualityByMachine = byLabel(analytics.quality.machineWise);
+  const policyOeeByMachine = byLabel(analytics.oee.machineWise);
   const machineRows = machines.map((machine) => ({
     Machine: machine.name,
     "Calculated State": machine.status,
@@ -122,6 +143,14 @@ export function buildFilteredReportWorkbook({
       oeeByMachine.get(machine.name)?.performance == null
         ? "Not available"
         : (oeeByMachine.get(machine.name)?.performance ?? 0) * 100,
+    "Quality (%)":
+      policyOeeByMachine.get(machine.name)?.quality == null
+        ? "Not available"
+        : (policyOeeByMachine.get(machine.name)?.quality ?? 0) * 100,
+    "Final OEE (%)":
+      policyOeeByMachine.get(machine.name)?.finalOee == null
+        ? "Not available"
+        : (policyOeeByMachine.get(machine.name)?.finalOee ?? 0) * 100,
     "Downtime (hours)": hours(
       downtimeByMachine.get(machine.name)?.totals.downtimeSeconds ?? 0,
     ),
@@ -139,6 +168,7 @@ export function buildFilteredReportWorkbook({
   const oeeByShift = byLabel(analytics.availabilityPerformance.shiftWise);
   const downtimeByShift = byLabel(analytics.downtime.shiftWise);
   const qualityByShift = byLabel(analytics.quality.shiftWise);
+  const policyOeeByShift = byLabel(analytics.oee.shiftWise);
   const shiftNames = new Set([
     ...productionByShift.keys(),
     ...oeeByShift.keys(),
@@ -159,6 +189,14 @@ export function buildFilteredReportWorkbook({
       oeeByShift.get(shift)?.performance == null
         ? "Not available"
         : (oeeByShift.get(shift)?.performance ?? 0) * 100,
+    "Quality (%)":
+      policyOeeByShift.get(shift)?.quality == null
+        ? "Not available"
+        : (policyOeeByShift.get(shift)?.quality ?? 0) * 100,
+    "Final OEE (%)":
+      policyOeeByShift.get(shift)?.finalOee == null
+        ? "Not available"
+        : (policyOeeByShift.get(shift)?.finalOee ?? 0) * 100,
     "Downtime (hours)": hours(
       downtimeByShift.get(shift)?.totals.downtimeSeconds ?? 0,
     ),

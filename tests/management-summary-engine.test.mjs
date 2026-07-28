@@ -158,6 +158,15 @@ function analyticsFixture() {
       daily: [],
       period: periodOee,
     },
+    oee: {
+      machineWise: [],
+      shiftWise: [],
+      daily: [],
+      period: {
+        quality: 0.9925,
+        finalOee: 0.6352,
+      },
+    },
     quality: {
       records: [],
       machineWise: [],
@@ -229,8 +238,15 @@ test("builds bounded verified evidence without raw workbook records", () => {
   const serialized = JSON.stringify(evidence);
   assert.equal(evidence.policy.calculationsAllowed, false);
   assert.equal(evidence.policy.rawRecordsIncluded, false);
-  assert.equal(evidence.pendingClaims[0], "Quality");
-  assert.equal(evidence.pendingClaims[1], "Final OEE");
+  assert.deepEqual(evidence.pendingClaims, []);
+  assert.equal(
+    evidence.facts.find((fact) => fact.id === "quality.factor")?.value,
+    0.9925,
+  );
+  assert.equal(
+    evidence.facts.find((fact) => fact.id === "oee.final")?.value,
+    0.6352,
+  );
   assert.ok(evidence.facts.length <= 80);
   assert.doesNotMatch(serialized, /secretRawField/);
   assert.doesNotMatch(serialized, /productionIntervals/);
@@ -241,7 +257,7 @@ test("builds bounded verified evidence without raw workbook records", () => {
   );
 });
 
-test("deterministic summary covers verified results and pending claims", () => {
+test("deterministic summary includes confirmed Quality and Final OEE", () => {
   const evidence = buildVerifiedManagementEvidence(analyticsFixture());
   const summary = buildDeterministicManagementSummary(evidence);
   assert.equal(summary.source, "deterministic");
@@ -252,7 +268,12 @@ test("deterministic summary covers verified results and pending claims", () => {
   assert.ok(summary.bottlenecks.length >= 1);
   assert.ok(summary.dataCaveats.length >= 1);
   assert.ok(summary.recommendations.length >= 1);
-  assert.deepEqual(summary.pendingClaims, ["Quality", "Final OEE"]);
+  assert.deepEqual(summary.pendingClaims, []);
+  assert.ok(
+    summary.executiveSummary.some((statement) =>
+      statement.evidenceIds.includes("oee.final"),
+    ),
+  );
 });
 
 test("AI request uses strict structured output and verified evidence only", async () => {

@@ -103,6 +103,8 @@ export type DowntimeEngineOptions = {
   maximumMergeGapSeconds?: number;
   requireSameReasonForMerge?: boolean;
   financialComparisonTolerance?: number;
+  financialLossMode?: "classified_downtime" | "all_events";
+  machineHourCostByMachine?: Readonly<Record<string, number>>;
 };
 
 export type DowntimeAnalytics = {
@@ -218,6 +220,8 @@ function classifyEvent(
   event: DowntimeEngineEventInput,
   context: DowntimeContextInterval | null,
   tolerance: number,
+  financialLossMode: "classified_downtime" | "all_events",
+  machineHourCostOverride: number | null,
 ): DowntimeEventIntelligence {
   const issues = new Set<DowntimeIntelligenceIssueCode>();
   if (event.isUnreported) issues.add("UNREPORTED_REASON");
@@ -228,7 +232,9 @@ function classifyEvent(
   const threshold = finiteNonNegative(
     context?.additionalOvertimeThresholdSeconds,
   );
-  const machineHourCost = finiteNonNegative(context?.machineHourCost);
+  const machineHourCost =
+    finiteNonNegative(machineHourCostOverride) ??
+    finiteNonNegative(context?.machineHourCost);
   let classification: DowntimeClassification;
   if (isSystemOff(event.reasonType, event.reason)) {
     classification = "system_off";
@@ -243,7 +249,10 @@ function classifyEvent(
   }
 
   let calculatedMachineHourLoss: number | null = 0;
-  if (classification === "downtime") {
+  if (
+    classification === "downtime" ||
+    financialLossMode === "all_events"
+  ) {
     if (machineHourCost == null) {
       calculatedMachineHourLoss = null;
       issues.add("MISSING_MACHINE_HOUR_COST");
@@ -314,8 +323,12 @@ function mergedFinancialLoss(
   classification: DowntimeClassification,
   durationSeconds: number | null,
   machineHourCost: number | null,
+  financialLossMode: "classified_downtime" | "all_events",
 ): number | null {
-  if (classification !== "downtime") {
+  if (
+    classification !== "downtime" &&
+    financialLossMode !== "all_events"
+  ) {
     return classification === "unclassified" ? null : 0;
   }
   return durationSeconds != null && machineHourCost != null
@@ -331,6 +344,7 @@ function mergeEvents(
       | "maximumMergeGapSeconds"
       | "requireSameReasonForMerge"
       | "financialComparisonTolerance"
+      | "financialLossMode"
     >
   >,
 ): DowntimeEventIntelligence[] {
@@ -374,6 +388,7 @@ function mergeEvents(
       previous.classification,
       durationSeconds,
       previous.machineHourCost,
+      options.financialLossMode,
     );
     const comparison = financialComparison(
       reportedMachineHourLoss,
@@ -557,6 +572,10 @@ export function buildDowntimeAnalytics(
   const financialComparisonTolerance =
     finiteNonNegative(options.financialComparisonTolerance) ??
     DEFAULT_FINANCIAL_TOLERANCE;
+  const financialLossMode =
+    options.financialLossMode ?? "classified_downtime";
+  const machineHourCostByMachine =
+    options.machineHourCostByMachine ?? {};
   const contextsByMachine = new Map<string, DowntimeContextInterval[]>();
   for (const context of contexts) {
     const group = contextsByMachine.get(context.machine) ?? [];
@@ -568,6 +587,8 @@ export function buildDowntimeAnalytics(
       event,
       findContext(event, contextsByMachine.get(event.machine) ?? []),
       financialComparisonTolerance,
+      financialLossMode,
+      finiteNonNegative(machineHourCostByMachine[event.machine]),
     ),
   );
   const mergedEvents = mergeRule.enabled
@@ -575,6 +596,7 @@ export function buildDowntimeAnalytics(
         maximumMergeGapSeconds: mergeRule.maximumGapSeconds,
         requireSameReasonForMerge: mergeRule.requireSameReason,
         financialComparisonTolerance,
+        financialLossMode,
       })
     : events.map((event) => ({
         ...event,

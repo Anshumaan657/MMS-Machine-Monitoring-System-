@@ -10,6 +10,12 @@ import {
   buildQualityAnalytics,
   type QualityAnalytics,
 } from "./quality-engine.ts";
+import {
+  evaluateCalculationPolicy,
+  type CalculationPolicySelection,
+  type PolicyProductionMetrics,
+  type ResolvedCalculationPolicy,
+} from "./calculation-policy.ts";
 import type {
   CanonicalMmsData,
   DowntimeEvent,
@@ -68,6 +74,28 @@ export type ProductionQueryAnalytics = {
   operatorWise: ProductionQueryAggregate[];
 };
 
+export type PolicyOeeAggregate = {
+  key: string;
+  label: string;
+  recordCount: number;
+  eligibleRecordCount: number;
+  missingQualityRecordCount: number;
+  producedQuantity: number;
+  goodQuantity: number;
+  availability: number | null;
+  performance: number | null;
+  quality: number | null;
+  finalOee: number | null;
+  status: "calculated" | "incomplete";
+};
+
+export type PolicyOeeAnalytics = {
+  period: PolicyOeeAggregate;
+  machineWise: PolicyOeeAggregate[];
+  shiftWise: PolicyOeeAggregate[];
+  daily: PolicyOeeAggregate[];
+};
+
 export type DataQualityFinding = {
   code: string;
   count: number;
@@ -103,7 +131,10 @@ export type MmsFilterOptions = {
   downtimeReasons: string[];
 };
 
+export type MmsAnalyticsQueryOptions = CalculationPolicySelection;
+
 export type FilteredMmsAnalytics = {
+  calculationPolicy: ResolvedCalculationPolicy;
   filters: NormalizedMmsAnalyticsFilters;
   activeFilterCount: number;
   scope: {
@@ -116,8 +147,12 @@ export type FilteredMmsAnalytics = {
     productionIntervals: ProductionInterval[];
     downtimeEvents: DowntimeEvent[];
   };
+  policyCalculations: {
+    production: PolicyProductionMetrics[];
+  };
   production: ProductionQueryAnalytics;
   availabilityPerformance: AvailabilityPerformanceAnalytics;
+  oee: PolicyOeeAnalytics;
   quality: QualityAnalytics;
   downtime: DowntimeAnalytics;
   dataQuality: FilteredDataQuality;
@@ -242,6 +277,7 @@ function aggregateProductionGroup(
   key: string,
   label: string,
   records: ProductionInterval[],
+  policyCalculations: ReadonlyMap<string, PolicyProductionMetrics>,
 ): ProductionQueryAggregate {
   const totals = {
     producedQuantity: 0,
@@ -252,12 +288,13 @@ function aggregateProductionGroup(
     productionLoss: 0,
   };
   for (const interval of records) {
-    totals.producedQuantity += interval.calculations.producedQuantityUsed ?? 0;
+    const calculation = policyCalculations.get(interval.id);
+    totals.producedQuantity += calculation?.producedQuantity ?? 0;
     totals.reportedQuantity += interval.quantities.reported ?? 0;
-    totals.calculatedQuantity += interval.calculations.actualQuantity ?? 0;
-    totals.shiftTarget += interval.quantities.shiftTarget ?? 0;
-    totals.operativeTimeTarget += interval.calculations.operativeTimeTarget ?? 0;
-    totals.productionLoss += interval.calculations.productionLoss ?? 0;
+    totals.calculatedQuantity += calculation?.calculatedQuantity ?? 0;
+    totals.shiftTarget += calculation?.shiftTarget ?? 0;
+    totals.operativeTimeTarget += calculation?.operativeTimeTarget ?? 0;
+    totals.productionLoss += calculation?.productionLoss ?? 0;
   }
   const roundedTotals = Object.fromEntries(
     Object.entries(totals).map(([name, value]) => [name, rounded(value)]),
@@ -304,6 +341,7 @@ function productionDimensionValue(
 function groupedProduction(
   records: ProductionInterval[],
   dimension: ProductionDimension,
+  policyCalculations: ReadonlyMap<string, PolicyProductionMetrics>,
 ): ProductionQueryAggregate[] {
   const groups = new Map<string, ProductionInterval[]>();
   for (const interval of records) {
@@ -314,22 +352,152 @@ function groupedProduction(
   }
   return [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, group]) => aggregateProductionGroup(key, key, group));
+    .map(([key, group]) =>
+      aggregateProductionGroup(key, key, group, policyCalculations),
+    );
 }
 
 function buildProductionAnalytics(
   records: ProductionInterval[],
+  policyCalculations: ReadonlyMap<string, PolicyProductionMetrics>,
 ): ProductionQueryAnalytics {
-  const period = aggregateProductionGroup("period", "Entire selection", records);
+  const period = aggregateProductionGroup(
+    "period",
+    "Entire selection",
+    records,
+    policyCalculations,
+  );
   return {
     recordCount: records.length,
     totals: period.totals,
     targetAttainment: period.targetAttainment,
-    machineWise: groupedProduction(records, "machine"),
-    shiftWise: groupedProduction(records, "shift"),
-    daily: groupedProduction(records, "date"),
-    productWise: groupedProduction(records, "product"),
-    operatorWise: groupedProduction(records, "operator"),
+    machineWise: groupedProduction(records, "machine", policyCalculations),
+    shiftWise: groupedProduction(records, "shift", policyCalculations),
+    daily: groupedProduction(records, "date", policyCalculations),
+    productWise: groupedProduction(records, "product", policyCalculations),
+    operatorWise: groupedProduction(records, "operator", policyCalculations),
+  };
+}
+
+function aggregatePolicyOee(
+  key: string,
+  label: string,
+  records: ProductionInterval[],
+  policyCalculations: ReadonlyMap<string, PolicyProductionMetrics>,
+  availabilityPerformance:
+    | AvailabilityPerformanceAnalytics["period"]
+    | undefined,
+): PolicyOeeAggregate {
+  const eligible = records.flatMap((record) => {
+    const calculation = policyCalculations.get(record.id);
+    return calculation?.oeeComponents.isEligible ? [calculation] : [];
+  });
+  const missingQualityRecordCount = eligible.filter(
+    (calculation) =>
+      calculation.producedQuantity == null ||
+      calculation.goodQuantity == null ||
+      calculation.quality == null,
+  ).length;
+  const producedQuantity = rounded(
+    eligible.reduce(
+      (sum, calculation) => sum + (calculation.producedQuantity ?? 0),
+      0,
+    ),
+  );
+  const goodQuantity = rounded(
+    eligible.reduce(
+      (sum, calculation) => sum + (calculation.goodQuantity ?? 0),
+      0,
+    ),
+  );
+  const quality =
+    eligible.length > 0 &&
+    missingQualityRecordCount === 0 &&
+    producedQuantity > 0
+      ? rounded(goodQuantity / producedQuantity, 8)
+      : null;
+  const availability = availabilityPerformance?.availability ?? null;
+  const performance = availabilityPerformance?.performance ?? null;
+  const finalOee =
+    availability != null && performance != null && quality != null
+      ? rounded(availability * performance * quality, 8)
+      : null;
+  return {
+    key,
+    label,
+    recordCount: records.length,
+    eligibleRecordCount: eligible.length,
+    missingQualityRecordCount,
+    producedQuantity,
+    goodQuantity,
+    availability,
+    performance,
+    quality,
+    finalOee,
+    status: finalOee == null ? "incomplete" : "calculated",
+  };
+}
+
+function groupedPolicyOee(
+  records: ProductionInterval[],
+  dimension: "machine" | "shift" | "date",
+  policyCalculations: ReadonlyMap<string, PolicyProductionMetrics>,
+  availabilityGroups: AvailabilityPerformanceAnalytics["machineWise"],
+): PolicyOeeAggregate[] {
+  const groups = new Map<string, ProductionInterval[]>();
+  for (const record of records) {
+    const key = productionDimensionValue(record, dimension);
+    const group = groups.get(key) ?? [];
+    group.push(record);
+    groups.set(key, group);
+  }
+  const availabilityByLabel = new Map(
+    availabilityGroups.map((group) => [group.label, group]),
+  );
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, group]) =>
+      aggregatePolicyOee(
+        key,
+        key,
+        group,
+        policyCalculations,
+        availabilityByLabel.get(key),
+      ),
+    );
+}
+
+function buildPolicyOeeAnalytics(
+  records: ProductionInterval[],
+  policyCalculations: ReadonlyMap<string, PolicyProductionMetrics>,
+  availabilityPerformance: AvailabilityPerformanceAnalytics,
+): PolicyOeeAnalytics {
+  return {
+    period: aggregatePolicyOee(
+      "period",
+      "Entire selection",
+      records,
+      policyCalculations,
+      availabilityPerformance.period,
+    ),
+    machineWise: groupedPolicyOee(
+      records,
+      "machine",
+      policyCalculations,
+      availabilityPerformance.machineWise,
+    ),
+    shiftWise: groupedPolicyOee(
+      records,
+      "shift",
+      policyCalculations,
+      availabilityPerformance.shiftWise,
+    ),
+    daily: groupedPolicyOee(
+      records,
+      "date",
+      policyCalculations,
+      availabilityPerformance.daily,
+    ),
   };
 }
 
@@ -461,7 +629,17 @@ function selectedDateRange(
 export function queryMmsAnalytics(
   data: CanonicalMmsData,
   filters: MmsAnalyticsFilters = {},
+  options: MmsAnalyticsQueryOptions = {},
 ): FilteredMmsAnalytics {
+  /*
+   * Evaluate the policy against the complete canonical dataset before
+   * filtering. Record selection therefore stays policy-independent while
+   * formulas that need period context remain deterministic.
+   */
+  const policyEvaluation = evaluateCalculationPolicy(
+    data.productionIntervals,
+    options,
+  );
   const normalizedFilters = normalizeMmsAnalyticsFilters(filters);
   const productionIntervals = data.productionIntervals.filter((interval) =>
     matchesProduction(interval, normalizedFilters),
@@ -469,13 +647,20 @@ export function queryMmsAnalytics(
   const downtimeEvents = data.downtimeEvents.filter((event) =>
     matchesDowntime(event, normalizedFilters),
   );
+  const selectedPolicyCalculations = new Map(
+    productionIntervals.flatMap((interval) => {
+      const calculation = policyEvaluation.productionByRecordId.get(interval.id);
+      return calculation ? [[interval.id, calculation] as const] : [];
+    }),
+  );
   const availabilityPerformance = aggregateAvailabilityPerformance(
     productionIntervals.map((interval) => ({
       id: interval.id,
       machine: interval.machine,
       shift: interval.shift,
       date: interval.date,
-      ...interval.oeeComponents,
+      ...(selectedPolicyCalculations.get(interval.id)?.oeeComponents ??
+        interval.oeeComponents),
     })),
   );
   const quality = buildQualityAnalytics(
@@ -484,7 +669,9 @@ export function queryMmsAnalytics(
       machine: interval.machine,
       shift: interval.shift,
       date: interval.date,
-      producedQuantity: interval.calculations.producedQuantityUsed,
+      producedQuantity:
+        selectedPolicyCalculations.get(interval.id)?.producedQuantity ??
+        interval.calculations.producedQuantityUsed,
       rejectedQuantity: interval.quantities.rejected,
       reworkedQuantity: interval.quantities.reworked,
       scrapPerPart: interval.scrapPerPart,
@@ -522,6 +709,11 @@ export function queryMmsAnalytics(
       reportedNonOperativeSeconds: interval.timesSeconds.nonOperative,
       reportedSystemOffSeconds: interval.timesSeconds.systemOff,
     })),
+    {
+      financialLossMode: policyEvaluation.downtime.financialLossMode,
+      machineHourCostByMachine:
+        policyEvaluation.downtime.machineHourCostByMachine,
+    },
   );
   const selectionRange = selectedDateRange(productionIntervals, downtimeEvents);
   const activeFilterCount = [
@@ -534,6 +726,7 @@ export function queryMmsAnalytics(
   ].filter(Boolean).length;
 
   return {
+    calculationPolicy: policyEvaluation.policy,
     filters: normalizedFilters,
     activeFilterCount,
     scope: {
@@ -542,8 +735,19 @@ export function queryMmsAnalytics(
       downtimeEventCount: downtimeEvents.length,
     },
     records: { productionIntervals, downtimeEvents },
-    production: buildProductionAnalytics(productionIntervals),
+    policyCalculations: {
+      production: [...selectedPolicyCalculations.values()],
+    },
+    production: buildProductionAnalytics(
+      productionIntervals,
+      selectedPolicyCalculations,
+    ),
     availabilityPerformance,
+    oee: buildPolicyOeeAnalytics(
+      productionIntervals,
+      selectedPolicyCalculations,
+      availabilityPerformance,
+    ),
     quality,
     downtime,
     dataQuality: buildFilteredDataQuality(

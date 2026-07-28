@@ -8,6 +8,7 @@ export type ManagementEvidenceCategory =
   | "shift_comparison"
   | "downtime"
   | "data_quality"
+  | "quality_oee"
   | "pending";
 
 export type ManagementEvidenceReliability =
@@ -38,7 +39,7 @@ export type VerifiedManagementEvidence = {
     downtimeEventCount: number;
   };
   facts: ManagementEvidenceFact[];
-  pendingClaims: ["Quality", "Final OEE"];
+  pendingClaims: string[];
   policy: {
     calculationsAllowed: false;
     rawRecordsIncluded: false;
@@ -67,7 +68,7 @@ export type ManagementSummary = {
   bottlenecks: EvidenceBackedStatement[];
   dataCaveats: EvidenceBackedStatement[];
   recommendations: ManagementRecommendation[];
-  pendingClaims: ["Quality", "Final OEE"];
+  pendingClaims: string[];
 };
 
 const numberFormat = new Intl.NumberFormat("en-IN", {
@@ -362,6 +363,7 @@ export function buildVerifiedManagementEvidence(
   });
 
   const quality = analytics.quality.period;
+  const policyOee = analytics.oee.period;
   facts.push(
     fact(
       "quality.rejected",
@@ -386,6 +388,24 @@ export function buildVerifiedManagementEvidence(
       numberFormat.format(quality.totals.estimatedScrap),
       quality.totals.estimatedScrap,
       "scrap units",
+    ),
+    fact(
+      "quality.factor",
+      "quality_oee",
+      "Quality",
+      percentage(policyOee.quality),
+      policyOee.quality,
+      "ratio",
+      policyOee.quality == null ? "caveat" : "verified",
+    ),
+    fact(
+      "oee.final",
+      "quality_oee",
+      "Final OEE",
+      percentage(policyOee.finalOee),
+      policyOee.finalOee,
+      "ratio",
+      policyOee.finalOee == null ? "caveat" : "verified",
     ),
   );
 
@@ -454,27 +474,6 @@ export function buildVerifiedManagementEvidence(
     );
   });
 
-  facts.push(
-    fact(
-      "pending.quality",
-      "pending",
-      "Official Quality",
-      "Pending — excluded from management claims",
-      null,
-      null,
-      "pending",
-    ),
-    fact(
-      "pending.final_oee",
-      "pending",
-      "Final OEE",
-      "Pending — excluded from management claims",
-      null,
-      null,
-      "pending",
-    ),
-  );
-
   const scope = {
     dateFrom: analytics.scope.dateFrom,
     dateTo: analytics.scope.dateTo,
@@ -490,7 +489,7 @@ export function buildVerifiedManagementEvidence(
     generatedAt,
     scope,
     facts,
-    pendingClaims: ["Quality", "Final OEE"],
+    pendingClaims: [],
     policy: {
       calculationsAllowed: false,
       rawRecordsIncluded: false,
@@ -532,6 +531,8 @@ export function buildDeterministicManagementSummary(
   const productionLoss = factById(evidence, "production.loss");
   const availability = factById(evidence, "oee.availability");
   const performance = factById(evidence, "oee.performance");
+  const qualityFactor = factById(evidence, "quality.factor");
+  const finalOee = factById(evidence, "oee.final");
   const downtime = factById(evidence, "downtime.hours");
   const machineHourLoss = factById(evidence, "downtime.machine_hour_loss");
   const unreported = factById(evidence, "data.unreported_downtime");
@@ -588,9 +589,10 @@ export function buildDeterministicManagementSummary(
       missingQuality.id,
     ),
     statement(
-      "Official Quality and Final OEE remain excluded from this summary.",
-      "pending.quality",
-      "pending.final_oee",
+      "Quality and Final OEE are generated from the 3D-confirmed calculation policy; unavailable values indicate incomplete quality inputs.",
+      "quality.factor",
+      "oee.final",
+      "data.missing_quality",
     ),
   ];
 
@@ -649,6 +651,18 @@ export function buildDeterministicManagementSummary(
         availability.id,
         performance.id,
       ),
+      qualityFactor.value == null || finalOee.value == null
+        ? statement(
+            "Quality and Final OEE are unavailable because the selected scope has incomplete quality inputs.",
+            qualityFactor.id,
+            finalOee.id,
+            missingQuality.id,
+          )
+        : statement(
+            `Verified Quality is ${qualityFactor.display} and Final OEE is ${finalOee.display}.`,
+            qualityFactor.id,
+            finalOee.id,
+          ),
       statement(
         `Long downtime is ${downtime.display}, with calculated machine-hour loss of ${machineHourLoss.display}.`,
         downtime.id,
@@ -678,7 +692,7 @@ export function buildDeterministicManagementSummary(
     bottlenecks,
     dataCaveats,
     recommendations,
-    pendingClaims: ["Quality", "Final OEE"],
+    pendingClaims: [],
   };
 }
 

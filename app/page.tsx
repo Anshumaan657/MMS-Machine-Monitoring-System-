@@ -84,6 +84,8 @@ type MachineView = {
   attainment: number | null;
   availability: number | null;
   performance: number | null;
+  quality: number | null;
+  finalOee: number | null;
   downtimeHours: number;
   financialLoss: number;
   rejected: number;
@@ -388,16 +390,6 @@ function StatusChip({ status }: { status: MachineStatus }) {
   );
 }
 
-function PendingMetric({ label }: { label: string }) {
-  return (
-    <div className="pending-metric">
-      <span>{label}</span>
-      <strong>Pending</strong>
-      <small>Reserved until the approved OEE phase is implemented</small>
-    </div>
-  );
-}
-
 function EmptyState({
   error,
   processing,
@@ -472,6 +464,7 @@ function buildMachineViews(
 ): MachineView[] {
   const production = byLabel(analytics.production.machineWise);
   const oee = byLabel(analytics.availabilityPerformance.machineWise);
+  const policyOee = byLabel(analytics.oee.machineWise);
   const downtime = byLabel(analytics.downtime.machineWise);
   const quality = byLabel(analytics.quality.machineWise);
   const issueCounts = new Map<string, number>();
@@ -491,6 +484,7 @@ function buildMachineViews(
     ...downtime.keys(),
     ...oee.keys(),
     ...quality.keys(),
+    ...policyOee.keys(),
   ]);
 
   return [...names]
@@ -500,6 +494,7 @@ function buildMachineViews(
       const oeeValue = oee.get(name);
       const downtimeValue = downtime.get(name);
       const qualityValue = quality.get(name);
+      const policyOeeValue = policyOee.get(name);
       const issueCount = issueCounts.get(name) ?? 0;
       return {
         id: `M-${String(index + 1).padStart(3, "0")}`,
@@ -515,6 +510,8 @@ function buildMachineViews(
         attainment: productionValue?.targetAttainment ?? null,
         availability: oeeValue?.availability ?? null,
         performance: oeeValue?.performance ?? null,
+        quality: policyOeeValue?.quality ?? null,
+        finalOee: policyOeeValue?.finalOee ?? null,
         downtimeHours: hours(downtimeValue?.totals.downtimeSeconds ?? 0),
         financialLoss:
           downtimeValue?.totals.calculatedMachineHourLoss ?? 0,
@@ -988,14 +985,14 @@ export default function DashboardPage() {
         />
         <KpiCard
           label="Quality"
-          value="Pending"
-          detail="Not included in this dashboard phase"
+          value={percent(analytics.oee.period.quality)}
+          detail="(Reported − rejected − rework) ÷ reported"
           tone="amber"
         />
         <KpiCard
           label="Final OEE"
-          value="Pending"
-          detail="Availability and Performance are verified"
+          value={percent(analytics.oee.period.finalOee)}
+          detail="Availability × Performance × Quality"
           tone="rose"
         />
       </section>
@@ -1924,8 +1921,16 @@ export default function DashboardPage() {
               </article>
             </div>
             <div className="pending-row">
-              <PendingMetric label="Quality" />
-              <PendingMetric label="Final OEE" />
+              <div className="pending-metric">
+                <span>Quality</span>
+                <strong>{percent(selectedMachineView.quality)}</strong>
+                <small>3D-confirmed direct-quantity policy</small>
+              </div>
+              <div className="pending-metric">
+                <span>Final OEE</span>
+                <strong>{percent(selectedMachineView.finalOee)}</strong>
+                <small>Availability × Performance × Quality</small>
+              </div>
             </div>
           </aside>
         ) : null}
@@ -1936,10 +1941,12 @@ export default function DashboardPage() {
   const renderDailyReport = () => {
     const shiftProduction = byLabel(analytics.production.shiftWise);
     const shiftOee = byLabel(analytics.availabilityPerformance.shiftWise);
+    const shiftPolicyOee = byLabel(analytics.oee.shiftWise);
     const shiftDowntime = byLabel(analytics.downtime.shiftWise);
     const shifts = new Set([
       ...shiftProduction.keys(),
       ...shiftOee.keys(),
+      ...shiftPolicyOee.keys(),
       ...shiftDowntime.keys(),
     ]);
     const managementSummary =
@@ -2006,6 +2013,7 @@ export default function DashboardPage() {
               {[...shifts].map((shift) => {
                 const production = shiftProduction.get(shift);
                 const oee = shiftOee.get(shift);
+                const policyOee = shiftPolicyOee.get(shift);
                 const downtime = shiftDowntime.get(shift);
                 return (
                   <article key={shift}>
@@ -2032,6 +2040,12 @@ export default function DashboardPage() {
                       </span>
                       <span>
                         Performance <strong>{percent(oee?.performance ?? null)}</strong>
+                      </span>
+                      <span>
+                        Quality <strong>{percent(policyOee?.quality ?? null)}</strong>
+                      </span>
+                      <span>
+                        Final OEE <strong>{percent(policyOee?.finalOee ?? null)}</strong>
                       </span>
                       <span>
                         Downtime{" "}
@@ -2122,11 +2136,11 @@ export default function DashboardPage() {
                   )}
                 </div>
                 <div className="brief-warning">
-                  <i>!</i>
+                  <i>✓</i>
                   <span>
-                    Official Quality and Final OEE claims remain excluded.
-                    The AI is not permitted to calculate figures; exact values
-                    are rendered only from verified evidence.
+                    Quality and Final OEE use the 3D-confirmed calculation
+                    policy. The AI is not permitted to recalculate figures;
+                    exact values come only from verified analytics evidence.
                   </span>
                 </div>
                 {managementSummaryNotice ? (
@@ -2196,6 +2210,12 @@ export default function DashboardPage() {
           <div className="topbar-context">
             <span>Machine Monitoring System</span>
             <strong>{activeLabel}</strong>
+            {analytics ? (
+              <small title={analytics.calculationPolicy.description}>
+                Calculation policy {analytics.calculationPolicy.version} ·{" "}
+                {analytics.calculationPolicy.status.replaceAll("_", " ")}
+              </small>
+            ) : null}
           </div>
           <div className="topbar-actions">
             <button
