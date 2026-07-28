@@ -359,7 +359,7 @@ test("attaches Availability and Performance while keeping OEE pending", () => {
   assert.equal(data.availabilityPerformance.period.finalOee.status, "pending");
 });
 
-test("builds separate quality, scrap, and rework analytics", () => {
+test("builds separate quality, scrap, rework, and readiness analytics", () => {
   const data = canonicalizeWorkbook(testWorkbook(), "fixture.xls");
   const first = data.qualityAnalytics.records[0];
 
@@ -370,8 +370,11 @@ test("builds separate quality, scrap, and rework analytics", () => {
   assert.equal(data.qualityAnalytics.period.totals.rejectedQuantity, 2);
   assert.equal(data.qualityAnalytics.period.totals.reworkedQuantity, 1);
   assert.equal(data.qualityAnalytics.period.totals.estimatedScrap, 12.5);
-  assert.equal(data.qualityAnalytics.oeeQualityStatus, "not_calculated");
-  assert.equal(data.qualityAnalytics.finalOeeStatus, "not_calculated");
+  assert.equal(first.goodQuantity, null);
+  assert.equal(first.quality, null);
+  assert.equal(first.qualityStatus, "blocked_unreliable_data");
+  assert.equal(data.qualityAnalytics.oeeQualityStatus, "blocked_unreliable_data");
+  assert.equal(data.qualityAnalytics.finalOeeStatus, "blocked");
 });
 
 test("builds event-level downtime and financial-loss intelligence", () => {
