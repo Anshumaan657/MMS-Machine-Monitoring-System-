@@ -412,3 +412,63 @@ test("keeps filtered record selection identical across calculation policies", ()
     provisional.production.totals.productionLoss,
   );
 });
+
+test("filters and recalculates by structured data-quality status", () => {
+  const result = queryMmsAnalytics(
+    canonicalData(),
+    { dataQualityStatus: "questionable" },
+    {
+      nowEpochMs: 2 * DAY + 43_200_000,
+      staleAfterMs: 10 * DAY,
+    },
+  );
+
+  assert.deepEqual(
+    result.records.productionIntervals.map((record) => record.id),
+    ["P-2"],
+  );
+  assert.equal(result.production.totals.producedQuantity, 50);
+  assert.equal(result.quality.period.totals.reworkedQuantity, 2);
+  const selectedIds = new Set([
+    ...result.records.productionIntervals.map((record) => record.id),
+    ...result.records.downtimeEvents.map((record) => record.id),
+  ]);
+  assert.ok(
+    result.dataQuality.structuredFindings.every((finding) =>
+      selectedIds.has(finding.recordId),
+    ),
+  );
+  assert.equal(result.activeFilterCount, 1);
+});
+
+test("supports alert-severity selection from evidence-backed findings", () => {
+  const result = queryMmsAnalytics(
+    canonicalData(),
+    { alertSeverity: ["warning"] },
+    {
+      nowEpochMs: 2 * DAY + 43_200_000,
+      staleAfterMs: 10 * DAY,
+    },
+  );
+
+  assert.deepEqual(
+    result.records.productionIntervals.map((record) => record.id),
+    ["P-2"],
+  );
+  assert.equal(result.records.downtimeEvents.length, 1);
+  assert.equal(result.dataQuality.advanced.bySeverity.warning > 0, true);
+});
+
+test("returns safe empty analytics when filters select no records", () => {
+  const result = queryMmsAnalytics(canonicalData(), {
+    machine: "M-NOT-FOUND",
+  });
+
+  assert.equal(result.scope.productionRecordCount, 0);
+  assert.equal(result.scope.downtimeEventCount, 0);
+  assert.equal(result.production.totals.producedQuantity, 0);
+  assert.equal(result.production.totals.productionLoss, 0);
+  assert.equal(result.oee.period.finalOee, null);
+  assert.equal(result.oee.period.finalOeeReadiness, "blocked");
+  assert.equal(result.dataQuality.structuredFindings.length, 0);
+});

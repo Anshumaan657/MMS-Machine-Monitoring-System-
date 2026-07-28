@@ -4,6 +4,7 @@ import type {
   DowntimeEventIntelligence,
   ProductionInterval,
 } from "./mms.ts";
+import type { FilteredMmsAnalytics } from "./analytics-query-engine.ts";
 import type { MmsDataSourceKind } from "./mms-data-source.ts";
 import type { MmsSyncStatus } from "./synchronization-engine.ts";
 import {
@@ -579,16 +580,36 @@ export function buildOperationalAlerts(
     acknowledgements?: AlertAcknowledgements;
     synchronization?: AlertSynchronizationContext;
     calculationPolicy?: CalculationPolicySelection;
+    /**
+     * When supplied, alerts consume the exact records and policy metrics
+     * already selected by the unified analytics query.
+     */
+    analytics?: FilteredMmsAnalytics;
   } = {},
 ): OperationalAlert[] {
   const config = normalizeOperationalAlertConfig(configInput);
   const acknowledgements = options.acknowledgements ?? {};
-  const policyEvaluation = evaluateCalculationPolicy(
-    data.productionIntervals,
-    options.calculationPolicy,
-  );
-  const downtimeAnalytics = buildDowntimeAnalytics(
-    data.downtimeEvents.map((event) => ({
+  const productionIntervals =
+    options.analytics?.records.productionIntervals ??
+    data.productionIntervals;
+  const downtimeEvents =
+    options.analytics?.records.downtimeEvents ?? data.downtimeEvents;
+  const policyEvaluation = options.analytics
+    ? null
+    : evaluateCalculationPolicy(
+        data.productionIntervals,
+        options.calculationPolicy,
+      );
+  const policyMetrics = options.analytics
+    ? new Map(
+        options.analytics.policyCalculations.production.map((metrics) => [
+          metrics.recordId,
+          metrics,
+        ]),
+      )
+    : policyEvaluation!.productionByRecordId;
+  const downtimeAnalytics = options.analytics?.downtime ?? buildDowntimeAnalytics(
+    downtimeEvents.map((event) => ({
       id: event.id,
       machine: event.machine,
       shift: event.shift,
@@ -605,7 +626,7 @@ export function buildOperationalAlerts(
       hasOverlap: event.issueCodes.includes("OVERLAPPING_DOWNTIME_EVENT"),
       reportedMachineHourLoss: event.reportedMachineHourLoss,
     })),
-    data.productionIntervals.map((interval) => ({
+    productionIntervals.map((interval) => ({
       id: interval.id,
       machine: interval.machine,
       shift: interval.shift,
@@ -620,24 +641,24 @@ export function buildOperationalAlerts(
       reportedSystemOffSeconds: interval.timesSeconds.systemOff,
     })),
     {
-      financialLossMode: policyEvaluation.downtime.financialLossMode,
+      financialLossMode: policyEvaluation!.downtime.financialLossMode,
       machineHourCostByMachine:
-        policyEvaluation.downtime.machineHourCostByMachine,
+        policyEvaluation!.downtime.machineHourCostByMachine,
     },
   );
   const intelligenceById = new Map(
     downtimeAnalytics.events.map((event) => [event.id, event]),
   );
   const alerts = [
-    ...data.productionIntervals.flatMap((interval) =>
+    ...productionIntervals.flatMap((interval) =>
       productionAlerts(
         interval,
-        policyEvaluation.productionByRecordId.get(interval.id),
+        policyMetrics.get(interval.id),
         config,
         acknowledgements,
       ),
     ),
-    ...data.downtimeEvents.flatMap((event) =>
+    ...downtimeEvents.flatMap((event) =>
       downtimeAlerts(event, intelligenceById, config, acknowledgements),
     ),
     ...synchronizationAlerts(

@@ -37,6 +37,10 @@ import {
   type VerifiedManagementEvidence,
 } from "./management-summary-engine";
 import { downloadFilteredReport } from "./report-export";
+import {
+  persistMmsAnalyticsFilters,
+  restoreMmsAnalyticsFilters,
+} from "./analytics-filter-state";
 import type {
   CanonicalMmsData,
   DowntimeAggregate,
@@ -319,6 +323,38 @@ function readAlertAcknowledgements(): AlertAcknowledgements {
   }
 }
 
+function readDashboardFilters(): {
+  dateFrom: string;
+  dateTo: string;
+  shift: string;
+  machine: string;
+} {
+  if (typeof window === "undefined") {
+    return { dateFrom: "", dateTo: "", shift: "", machine: "" };
+  }
+  try {
+    const filters = restoreMmsAnalyticsFilters(window.localStorage);
+    const shifts = Array.isArray(filters.shift)
+      ? filters.shift
+      : filters.shift
+        ? [filters.shift]
+        : [];
+    const machines = Array.isArray(filters.machine)
+      ? filters.machine
+      : filters.machine
+        ? [filters.machine]
+        : [];
+    return {
+      dateFrom: filters.dateRange?.from ?? "",
+      dateTo: filters.dateRange?.to ?? "",
+      shift: shifts[0] ?? "",
+      machine: machines[0] ?? "",
+    };
+  } catch {
+    return { dateFrom: "", dateTo: "", shift: "", machine: "" };
+  }
+}
+
 function formatAlertMetric(metric: AlertMetricValue): string {
   if (typeof metric.value === "number") {
     return `${numberFormat.format(metric.value)} ${metric.unit}`;
@@ -526,13 +562,16 @@ function buildMachineViews(
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
+  const [initialFilters] = useState(readDashboardFilters);
   const [canonical, setCanonical] = useState<CanonicalMmsData | null>(null);
   const [processing, setProcessing] = useState(false);
   const [loadError, setLoadError] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [selectedShift, setSelectedShift] = useState("");
-  const [selectedMachine, setSelectedMachine] = useState("");
+  const [dateFrom, setDateFrom] = useState(initialFilters.dateFrom);
+  const [dateTo, setDateTo] = useState(initialFilters.dateTo);
+  const [selectedShift, setSelectedShift] = useState(initialFilters.shift);
+  const [selectedMachine, setSelectedMachine] = useState(
+    initialFilters.machine,
+  );
   const [machineSearch, setMachineSearch] = useState("");
   const [machineStatus, setMachineStatus] = useState<MachineStatus | "All">(
     "All",
@@ -615,6 +654,22 @@ export default function DashboardPage() {
   }, [alertAcknowledgements]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      persistMmsAnalyticsFilters(window.localStorage, {
+        dateRange: {
+          from: dateFrom || null,
+          to: dateTo || null,
+        },
+        shift: selectedShift || null,
+        machine: selectedMachine || null,
+      });
+    } catch {
+      // Filters remain active in memory when device storage is unavailable.
+    }
+  }, [dateFrom, dateTo, selectedMachine, selectedShift]);
+
+  useEffect(() => {
     if (!syncNotice) return;
     const timer = window.setTimeout(() => setSyncNotice(null), 7_000);
     return () => window.clearTimeout(timer);
@@ -665,11 +720,13 @@ export default function DashboardPage() {
               lastAttemptAt: syncState.lastAttemptAt,
               error: syncState.error,
             },
+            analytics: analytics ?? undefined,
           })
         : [],
     [
       alertAcknowledgements,
       alertConfig,
+      analytics,
       canonical,
       sourceKind,
       syncState.error,
@@ -790,10 +847,6 @@ export default function DashboardPage() {
     setSourceMode(mode);
     setSourceKind(source.kind);
     if (!hadDataset) {
-      setDateFrom("");
-      setDateTo("");
-      setSelectedShift("");
-      setSelectedMachine("");
       setSelectedMachineName("");
       setActiveTab("overview");
     }

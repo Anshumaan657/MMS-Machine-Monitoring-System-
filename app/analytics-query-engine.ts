@@ -16,6 +16,12 @@ import {
   type PolicyProductionMetrics,
   type ResolvedCalculationPolicy,
 } from "./calculation-policy.ts";
+import {
+  buildAdvancedDataQualityAnalytics,
+  type AdvancedDataQualityAnalytics,
+  type DataQualityFindingStatus,
+  type StructuredDataQualityFinding,
+} from "./data-quality-engine.ts";
 import type {
   CanonicalMmsData,
   DowntimeEvent,
@@ -36,6 +42,8 @@ export type MmsAnalyticsFilters = {
   product?: AnalyticsFilterValue | null;
   operator?: AnalyticsFilterValue | null;
   downtimeReason?: AnalyticsFilterValue | null;
+  alertSeverity?: AnalyticsFilterValue | null;
+  dataQualityStatus?: AnalyticsFilterValue | null;
 };
 
 export type NormalizedMmsAnalyticsFilters = {
@@ -46,6 +54,8 @@ export type NormalizedMmsAnalyticsFilters = {
   products: string[];
   operators: string[];
   downtimeReasons: string[];
+  alertSeverities: string[];
+  dataQualityStatuses: string[];
 };
 
 export type ProductionQueryAggregate = {
@@ -86,7 +96,13 @@ export type PolicyOeeAggregate = {
   performance: number | null;
   quality: number | null;
   finalOee: number | null;
-  status: "calculated" | "incomplete";
+  qualityConfidence: "high" | "low" | "unavailable";
+  finalOeeReadiness: "ready" | "blocked";
+  status:
+    | "calculated"
+    | "incomplete"
+    | "blocked_provisional_policy"
+    | "blocked_unreliable_data";
 };
 
 export type PolicyOeeAnalytics = {
@@ -120,6 +136,8 @@ export type FilteredDataQuality = {
   possiblyUnreportedQualityRecords: number;
   unreportedDowntimeEvents: number;
   overlappingDowntimeEvents: number;
+  structuredFindings: StructuredDataQualityFinding[];
+  advanced: AdvancedDataQualityAnalytics;
 };
 
 export type MmsFilterOptions = {
@@ -129,9 +147,14 @@ export type MmsFilterOptions = {
   products: string[];
   operators: string[];
   downtimeReasons: string[];
+  alertSeverities: string[];
+  dataQualityStatuses: DataQualityFindingStatus[];
 };
 
-export type MmsAnalyticsQueryOptions = CalculationPolicySelection;
+export type MmsAnalyticsQueryOptions = CalculationPolicySelection & {
+  nowEpochMs?: number;
+  staleAfterMs?: number;
+};
 
 export type FilteredMmsAnalytics = {
   calculationPolicy: ResolvedCalculationPolicy;
@@ -189,7 +212,48 @@ export function normalizeMmsAnalyticsFilters(
     products: normalizedValues(filters.product),
     operators: normalizedValues(filters.operator),
     downtimeReasons: normalizedValues(filters.downtimeReason),
+    alertSeverities: normalizedValues(filters.alertSeverity),
+    dataQualityStatuses: normalizedValues(filters.dataQualityStatus),
   };
+}
+
+function recordTrustStatus(
+  recordId: string,
+  findingsByRecordId: ReadonlyMap<string, StructuredDataQualityFinding[]>,
+): DataQualityFindingStatus {
+  const findings = findingsByRecordId.get(recordId) ?? [];
+  if (findings.some((finding) => finding.status === "invalid")) return "invalid";
+  if (findings.some((finding) => finding.status === "questionable")) {
+    return "questionable";
+  }
+  if (findings.some((finding) => finding.status === "informational")) {
+    return "informational";
+  }
+  return "valid";
+}
+
+function matchesTrustFilters(
+  recordId: string,
+  filters: NormalizedMmsAnalyticsFilters,
+  findingsByRecordId: ReadonlyMap<string, StructuredDataQualityFinding[]>,
+): boolean {
+  const findings = findingsByRecordId.get(recordId) ?? [];
+  const status = recordTrustStatus(recordId, findingsByRecordId);
+  const statusMatches = matchesSelection(
+    [status],
+    filters.dataQualityStatuses,
+  );
+  const severities = findings.flatMap((finding) =>
+    finding.severity === "error"
+      ? ["critical", "error"]
+      : finding.severity === "warning"
+        ? ["warning"]
+        : ["information"],
+  );
+  return (
+    statusMatches &&
+    matchesSelection(severities, filters.alertSeverities)
+  );
 }
 
 function matchesSelection(values: string[], selections: string[]): boolean {
@@ -387,6 +451,7 @@ function aggregatePolicyOee(
   availabilityPerformance:
     | AvailabilityPerformanceAnalytics["period"]
     | undefined,
+  policyStatus: ResolvedCalculationPolicy["status"],
 ): PolicyOeeAggregate {
   const eligible = records.flatMap((record) => {
     const calculation = policyCalculations.get(record.id);
@@ -398,6 +463,7 @@ function aggregatePolicyOee(
       calculation.goodQuantity == null ||
       calculation.quality == null,
   ).length;
+  const unreliableRecordCount = records.filter((record) => !record.isValid).length;
   const producedQuantity = rounded(
     eligible.reduce(
       (sum, calculation) => sum + (calculation.producedQuantity ?? 0),
@@ -413,6 +479,8 @@ function aggregatePolicyOee(
   const quality =
     eligible.length > 0 &&
     missingQualityRecordCount === 0 &&
+    unreliableRecordCount === 0 &&
+    policyStatus === "confirmed" &&
     producedQuantity > 0
       ? rounded(goodQuantity / producedQuantity, 8)
       : null;
@@ -422,6 +490,14 @@ function aggregatePolicyOee(
     availability != null && performance != null && quality != null
       ? rounded(availability * performance * quality, 8)
       : null;
+  const status =
+    policyStatus !== "confirmed"
+      ? "blocked_provisional_policy"
+      : unreliableRecordCount > 0
+        ? "blocked_unreliable_data"
+        : finalOee == null
+          ? "incomplete"
+          : "calculated";
   return {
     key,
     label,
@@ -434,7 +510,18 @@ function aggregatePolicyOee(
     performance,
     quality,
     finalOee,
-    status: finalOee == null ? "incomplete" : "calculated",
+    qualityConfidence:
+      status !== "calculated"
+        ? "unavailable"
+        : records.some(
+            (record) =>
+              record.quantities.rejected === 0 &&
+              record.quantities.reworked === 0,
+          )
+          ? "low"
+          : "high",
+    finalOeeReadiness: status === "calculated" ? "ready" : "blocked",
+    status,
   };
 }
 
@@ -443,6 +530,7 @@ function groupedPolicyOee(
   dimension: "machine" | "shift" | "date",
   policyCalculations: ReadonlyMap<string, PolicyProductionMetrics>,
   availabilityGroups: AvailabilityPerformanceAnalytics["machineWise"],
+  policyStatus: ResolvedCalculationPolicy["status"],
 ): PolicyOeeAggregate[] {
   const groups = new Map<string, ProductionInterval[]>();
   for (const record of records) {
@@ -463,6 +551,7 @@ function groupedPolicyOee(
         group,
         policyCalculations,
         availabilityByLabel.get(key),
+        policyStatus,
       ),
     );
 }
@@ -471,6 +560,7 @@ function buildPolicyOeeAnalytics(
   records: ProductionInterval[],
   policyCalculations: ReadonlyMap<string, PolicyProductionMetrics>,
   availabilityPerformance: AvailabilityPerformanceAnalytics,
+  policyStatus: ResolvedCalculationPolicy["status"],
 ): PolicyOeeAnalytics {
   return {
     period: aggregatePolicyOee(
@@ -479,24 +569,28 @@ function buildPolicyOeeAnalytics(
       records,
       policyCalculations,
       availabilityPerformance.period,
+      policyStatus,
     ),
     machineWise: groupedPolicyOee(
       records,
       "machine",
       policyCalculations,
       availabilityPerformance.machineWise,
+      policyStatus,
     ),
     shiftWise: groupedPolicyOee(
       records,
       "shift",
       policyCalculations,
       availabilityPerformance.shiftWise,
+      policyStatus,
     ),
     daily: groupedPolicyOee(
       records,
       "date",
       policyCalculations,
       availabilityPerformance.daily,
+      policyStatus,
     ),
   };
 }
@@ -519,6 +613,7 @@ function buildFilteredDataQuality(
   validationIssues: ValidationIssue[],
   quality: QualityAnalytics,
   downtime: DowntimeAnalytics,
+  advanced: AdvancedDataQualityAnalytics,
 ): FilteredDataQuality {
   const recordIds = new Set([
     ...productionIntervals.map((record) => record.id),
@@ -532,10 +627,10 @@ function buildFilteredDataQuality(
     incrementFinding(findings, issue.code, issue.severity, "canonical");
   }
   for (const interval of productionIntervals) {
-    for (const code of interval.calculations.issueCodes) {
+    for (const code of interval.calculations.issueCodes ?? []) {
       incrementFinding(findings, code, "warning", "production");
     }
-    for (const code of interval.oeeComponents.issueCodes) {
+    for (const code of interval.oeeComponents.issueCodes ?? []) {
       incrementFinding(
         findings,
         code,
@@ -607,6 +702,8 @@ function buildFilteredDataQuality(
     overlappingDowntimeEvents: downtime.events.filter(
       (event) => event.hasOverlap,
     ).length,
+    structuredFindings: advanced.findings,
+    advanced,
   };
 }
 
@@ -641,12 +738,63 @@ export function queryMmsAnalytics(
     options,
   );
   const normalizedFilters = normalizeMmsAnalyticsFilters(filters);
+  const completeDataQuality = buildAdvancedDataQualityAnalytics(data, {
+    nowEpochMs: options.nowEpochMs,
+    staleAfterMs: options.staleAfterMs,
+  });
+  const findingsByRecordId = new Map<string, StructuredDataQualityFinding[]>();
+  for (const finding of completeDataQuality.findings) {
+    const group = findingsByRecordId.get(finding.recordId) ?? [];
+    group.push(finding);
+    findingsByRecordId.set(finding.recordId, group);
+  }
   const productionIntervals = data.productionIntervals.filter((interval) =>
-    matchesProduction(interval, normalizedFilters),
+    matchesProduction(interval, normalizedFilters) &&
+    matchesTrustFilters(interval.id, normalizedFilters, findingsByRecordId),
   );
   const downtimeEvents = data.downtimeEvents.filter((event) =>
-    matchesDowntime(event, normalizedFilters),
+    matchesDowntime(event, normalizedFilters) &&
+    matchesTrustFilters(event.id, normalizedFilters, findingsByRecordId),
   );
+  const selectedIds = new Set([
+    ...productionIntervals.map((record) => record.id),
+    ...downtimeEvents.map((record) => record.id),
+  ]);
+  const selectedFindings = completeDataQuality.findings.filter((finding) =>
+    selectedIds.has(finding.recordId),
+  );
+  const selectedAdvancedDataQuality: AdvancedDataQualityAnalytics = {
+    ...completeDataQuality,
+    findings: selectedFindings,
+    bySeverity: {
+      error: selectedFindings.filter((finding) => finding.severity === "error").length,
+      warning: selectedFindings.filter((finding) => finding.severity === "warning").length,
+      information: selectedFindings.filter(
+        (finding) => finding.severity === "information",
+      ).length,
+    },
+    affectedRecordCount: new Set(
+      selectedFindings.map((finding) => finding.recordId),
+    ).size,
+    totalRecordCount: selectedIds.size,
+    trustworthyRecordCount: [...selectedIds].filter(
+      (id) => !findingsByRecordId.has(id),
+    ).length,
+    byStatus: {
+      valid: [...selectedIds].filter(
+        (id) => recordTrustStatus(id, findingsByRecordId) === "valid",
+      ).length,
+      questionable: [...selectedIds].filter(
+        (id) => recordTrustStatus(id, findingsByRecordId) === "questionable",
+      ).length,
+      invalid: [...selectedIds].filter(
+        (id) => recordTrustStatus(id, findingsByRecordId) === "invalid",
+      ).length,
+      informational: [...selectedIds].filter(
+        (id) => recordTrustStatus(id, findingsByRecordId) === "informational",
+      ).length,
+    },
+  };
   const selectedPolicyCalculations = new Map(
     productionIntervals.flatMap((interval) => {
       const calculation = policyEvaluation.productionByRecordId.get(interval.id);
@@ -675,6 +823,8 @@ export function queryMmsAnalytics(
       rejectedQuantity: interval.quantities.rejected,
       reworkedQuantity: interval.quantities.reworked,
       scrapPerPart: interval.scrapPerPart,
+      policyStatus: policyEvaluation.policy.status,
+      requiredDataReliable: interval.isValid,
     })),
   );
   const downtime = buildDowntimeAnalytics(
@@ -723,6 +873,8 @@ export function queryMmsAnalytics(
     normalizedFilters.products.length,
     normalizedFilters.operators.length,
     normalizedFilters.downtimeReasons.length,
+    normalizedFilters.alertSeverities.length,
+    normalizedFilters.dataQualityStatuses.length,
   ].filter(Boolean).length;
 
   return {
@@ -747,6 +899,7 @@ export function queryMmsAnalytics(
       productionIntervals,
       selectedPolicyCalculations,
       availabilityPerformance,
+      policyEvaluation.policy.status,
     ),
     quality,
     downtime,
@@ -756,6 +909,7 @@ export function queryMmsAnalytics(
       data.validationIssues,
       quality,
       downtime,
+      selectedAdvancedDataQuality,
     ),
   };
 }
@@ -810,5 +964,12 @@ export function getMmsFilterOptions(data: CanonicalMmsData): MmsFilterOptions {
         uniqueSorted([record.reason, record.reasonType]),
       ),
     ),
+    alertSeverities: ["critical", "warning", "information"],
+    dataQualityStatuses: [
+      "valid",
+      "questionable",
+      "invalid",
+      "informational",
+    ],
   };
 }
