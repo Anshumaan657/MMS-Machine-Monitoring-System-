@@ -12,7 +12,7 @@ function rowByLabel(rows, label) {
   return rows.find((row) => row[0] === label);
 }
 
-test("exports all seven filtered analytics worksheets", () => {
+test("exports all ten filtered analytics worksheets", () => {
   const data = exactCanonicalFixture();
   const analytics = queryMmsAnalytics(data, {
     date: "2024-01-01",
@@ -31,10 +31,13 @@ test("exports all seven filtered analytics worksheets", () => {
     "Daily Overview",
     "Machine Performance",
     "Shift Performance",
+    "Production Intervals",
     "Downtime Events",
     "Financial Losses",
-    "Data Quality",
+    "Data-Quality Findings",
+    "Alerts",
     "Rejection Rework Scrap",
+    "Formula Policy and Metadata",
   ]);
 
   const bytes = XLSX.write(workbook, {
@@ -64,11 +67,65 @@ test("exports all seven filtered analytics worksheets", () => {
   assert.deepEqual(rowByLabel(overview, "Final OEE"), [
     "Final OEE",
     9.85,
-    "Percent",
+    "ready",
+  ]);
+  assert.deepEqual(rowByLabel(overview, "Production loss"), [
+    "Production loss",
+    analytics.production.totals.productionLoss,
+    "Quantity",
+  ]);
+  assert.equal(
+    XLSX.utils.sheet_to_json(
+      reopened.Sheets["Production Intervals"],
+    ).length,
+    analytics.records.productionIntervals.length,
+  );
+  const metadata = XLSX.utils.sheet_to_json(
+    reopened.Sheets["Formula Policy and Metadata"],
+    { header: 1 },
+  );
+  assert.deepEqual(rowByLabel(metadata, "Policy version"), [
+    "Policy version",
+    "2.0.0",
+  ]);
+  assert.deepEqual(rowByLabel(metadata, "M. Factor treatment"), [
+    "M. Factor treatment",
+    "Validation-only under the confirmed policy",
   ]);
   assert.equal(
     filteredReportFileName(analytics),
     "MMS-Analytics-2024-01-01-2024-01-01.xlsx",
+  );
+});
+
+test("Excel totals match the filtered dashboard analytics", () => {
+  const data = exactCanonicalFixture();
+  const analytics = queryMmsAnalytics(data, {
+    dateRange: { from: "2024-01-01", to: "2024-01-01" },
+  });
+  const workbook = buildFilteredReportWorkbook({
+    analytics,
+    company: data.source.company,
+    sourceFileName: data.source.fileName,
+    machines: [{ name: "MACHINE A", status: "Running" }],
+    generatedAt: "2026-07-28T00:00:00.000Z",
+    lastSuccessfulSyncAt: "2026-07-28T00:00:00.000Z",
+  });
+  const overview = XLSX.utils.sheet_to_json(
+    workbook.Sheets["Daily Overview"],
+    { header: 1 },
+  );
+  assert.equal(
+    rowByLabel(overview, "Production")[1],
+    analytics.production.totals.producedQuantity,
+  );
+  assert.equal(
+    rowByLabel(overview, "Shift target")[1],
+    analytics.production.totals.shiftTarget,
+  );
+  assert.equal(
+    rowByLabel(overview, "Calculated machine-hour loss")[1],
+    analytics.downtime.period.totals.calculatedMachineHourLoss,
   );
 });
 

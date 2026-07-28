@@ -51,6 +51,8 @@ test("contains the functional dashboard, query engine, and report export", async
     managementSummaryProvider,
     managementSummaryRoute,
     reportExport,
+    dashboardUi,
+    printableReport,
     verificationEngine,
   ] =
     await Promise.all([
@@ -65,6 +67,8 @@ test("contains the functional dashboard, query engine, and report export", async
     readFile(new URL("../app/ai-management-summary-provider.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/management-summary/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/report-export.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/dashboard-ui.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/printable-report.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/verification-engine.ts", import.meta.url), "utf8"),
   ]);
 
@@ -75,6 +79,10 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(page, /Final OEE/);
   assert.match(page, /3D-confirmed calculation/);
   assert.match(page, /Export Excel \(\.xlsx\)/);
+  assert.match(page, /Print \/ Save PDF/);
+  assert.match(page, /MultiSelectFilter/);
+  assert.match(page, /structuredFindings/);
+  assert.match(page, /Latest filtered production interval/);
   assert.match(page, /downloadFilteredReport/);
   assert.match(page, /queryMmsAnalytics/);
   assert.match(page, /ExcelMmsDataSource/);
@@ -131,9 +139,20 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(reportExport, /XLSX\.writeFile/);
   assert.match(reportExport, /Machine Performance/);
   assert.match(reportExport, /Shift Performance/);
+  assert.match(reportExport, /Production Intervals/);
   assert.match(reportExport, /Downtime Events/);
   assert.match(reportExport, /Financial Losses/);
+  assert.match(reportExport, /Data-Quality Findings/);
+  assert.match(reportExport, /Formula Policy and Metadata/);
+  assert.match(reportExport, /OperationalAlert/);
   assert.match(reportExport, /Rejection Rework Scrap/);
+  assert.match(dashboardUi, /MultiSelectFilter/);
+  assert.match(dashboardUi, /LoadingSkeleton/);
+  assert.match(dashboardUi, /ErrorPanel/);
+  assert.match(dashboardUi, /SidePanel/);
+  assert.match(printableReport, /PrintableMmsReport/);
+  assert.match(printableReport, /Operational Analytics Report/);
+  assert.match(printableReport, /Data-quality findings/);
   assert.match(verificationEngine, /buildMmsVerificationReport/);
   assert.match(verificationEngine, /final3dSignoffRequired:\s*true/);
 

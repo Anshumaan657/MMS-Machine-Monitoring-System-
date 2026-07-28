@@ -38,6 +38,17 @@ import {
 } from "./management-summary-engine";
 import { downloadFilteredReport } from "./report-export";
 import {
+  EmptyPanel,
+  ErrorPanel,
+  InfoTooltip,
+  LoadingSkeleton,
+  MetricStatus,
+  MultiSelectFilter,
+  SidePanel,
+  TableFrame,
+} from "./dashboard-ui";
+import { PrintableMmsReport } from "./printable-report";
+import {
   persistMmsAnalyticsFilters,
   restoreMmsAnalyticsFilters,
 } from "./analytics-filter-state";
@@ -97,6 +108,9 @@ type MachineView = {
   estimatedScrap: number;
   issueCount: number;
   unreportedEvents: number;
+  latestRecordAt: string | null;
+  latestProduct: string;
+  latestShift: string;
 };
 
 type KpiCardProps = {
@@ -328,9 +342,22 @@ function readDashboardFilters(): {
   dateTo: string;
   shift: string;
   machine: string;
+  products: string[];
+  operators: string[];
+  downtimeReasons: string[];
+  dataQualityStatuses: string[];
 } {
   if (typeof window === "undefined") {
-    return { dateFrom: "", dateTo: "", shift: "", machine: "" };
+    return {
+      dateFrom: "",
+      dateTo: "",
+      shift: "",
+      machine: "",
+      products: [],
+      operators: [],
+      downtimeReasons: [],
+      dataQualityStatuses: [],
+    };
   }
   try {
     const filters = restoreMmsAnalyticsFilters(window.localStorage);
@@ -349,9 +376,38 @@ function readDashboardFilters(): {
       dateTo: filters.dateRange?.to ?? "",
       shift: shifts[0] ?? "",
       machine: machines[0] ?? "",
+      products: Array.isArray(filters.product)
+        ? filters.product
+        : filters.product
+          ? [filters.product]
+          : [],
+      operators: Array.isArray(filters.operator)
+        ? filters.operator
+        : filters.operator
+          ? [filters.operator]
+          : [],
+      downtimeReasons: Array.isArray(filters.downtimeReason)
+        ? filters.downtimeReason
+        : filters.downtimeReason
+          ? [filters.downtimeReason]
+          : [],
+      dataQualityStatuses: Array.isArray(filters.dataQualityStatus)
+        ? filters.dataQualityStatus
+        : filters.dataQualityStatus
+          ? [filters.dataQualityStatus]
+          : [],
     };
   } catch {
-    return { dateFrom: "", dateTo: "", shift: "", machine: "" };
+    return {
+      dateFrom: "",
+      dateTo: "",
+      shift: "",
+      machine: "",
+      products: [],
+      operators: [],
+      downtimeReasons: [],
+      dataQualityStatuses: [],
+    };
   }
 }
 
@@ -453,6 +509,7 @@ function EmptyState({
         workbook for changes every minute.
       </p>
       {error ? <div className="inline-alert">{error}</div> : null}
+      {processing ? <LoadingSkeleton label="Processing MMS workbook" /> : null}
       <button
         className="button button-primary"
         onClick={onUpload}
@@ -515,6 +572,20 @@ function buildMachineViews(
     const machine = machineByRecord.get(issue.recordId);
     if (machine) issueCounts.set(machine, (issueCounts.get(machine) ?? 0) + 1);
   }
+  const latestIntervals = new Map<
+    string,
+    FilteredMmsAnalytics["records"]["productionIntervals"][number]
+  >();
+  for (const interval of analytics.records.productionIntervals) {
+    const current = latestIntervals.get(interval.machine);
+    if (
+      !current ||
+      (interval.endEpochMs ?? interval.startEpochMs ?? 0) >
+        (current.endEpochMs ?? current.startEpochMs ?? 0)
+    ) {
+      latestIntervals.set(interval.machine, interval);
+    }
+  }
   const names = new Set([
     ...production.keys(),
     ...downtime.keys(),
@@ -531,6 +602,7 @@ function buildMachineViews(
       const downtimeValue = downtime.get(name);
       const qualityValue = quality.get(name);
       const policyOeeValue = policyOee.get(name);
+      const latestInterval = latestIntervals.get(name);
       const issueCount = issueCounts.get(name) ?? 0;
       return {
         id: `M-${String(index + 1).padStart(3, "0")}`,
@@ -556,6 +628,12 @@ function buildMachineViews(
         estimatedScrap: qualityValue?.totals.estimatedScrap ?? 0,
         issueCount,
         unreportedEvents: downtimeValue?.unreportedEventCount ?? 0,
+        latestRecordAt: latestInterval?.endAt ?? latestInterval?.startAt ?? null,
+        latestProduct:
+          latestInterval?.product.productName ||
+          latestInterval?.product.partNumber ||
+          "Not provided",
+        latestShift: latestInterval?.shift || "Not provided",
       };
     });
 }
@@ -572,6 +650,17 @@ export default function DashboardPage() {
   const [selectedMachine, setSelectedMachine] = useState(
     initialFilters.machine,
   );
+  const [selectedProducts, setSelectedProducts] = useState(
+    initialFilters.products,
+  );
+  const [selectedOperators, setSelectedOperators] = useState(
+    initialFilters.operators,
+  );
+  const [selectedDowntimeReasons, setSelectedDowntimeReasons] = useState(
+    initialFilters.downtimeReasons,
+  );
+  const [selectedDataQualityStatuses, setSelectedDataQualityStatuses] =
+    useState(initialFilters.dataQualityStatuses);
   const [machineSearch, setMachineSearch] = useState("");
   const [machineStatus, setMachineStatus] = useState<MachineStatus | "All">(
     "All",
@@ -663,11 +752,24 @@ export default function DashboardPage() {
         },
         shift: selectedShift || null,
         machine: selectedMachine || null,
+        product: selectedProducts,
+        operator: selectedOperators,
+        downtimeReason: selectedDowntimeReasons,
+        dataQualityStatus: selectedDataQualityStatuses,
       });
     } catch {
       // Filters remain active in memory when device storage is unavailable.
     }
-  }, [dateFrom, dateTo, selectedMachine, selectedShift]);
+  }, [
+    dateFrom,
+    dateTo,
+    selectedDataQualityStatuses,
+    selectedDowntimeReasons,
+    selectedMachine,
+    selectedOperators,
+    selectedProducts,
+    selectedShift,
+  ]);
 
   useEffect(() => {
     if (!syncNotice) return;
@@ -689,9 +791,23 @@ export default function DashboardPage() {
             },
             shift: selectedShift || null,
             machine: selectedMachine || null,
+            product: selectedProducts,
+            operator: selectedOperators,
+            downtimeReason: selectedDowntimeReasons,
+            dataQualityStatus: selectedDataQualityStatuses,
           })
         : null,
-    [canonical, dateFrom, dateTo, selectedMachine, selectedShift],
+    [
+      canonical,
+      dateFrom,
+      dateTo,
+      selectedDataQualityStatuses,
+      selectedDowntimeReasons,
+      selectedMachine,
+      selectedOperators,
+      selectedProducts,
+      selectedShift,
+    ],
   );
   const managementEvidence = useMemo(
     () => (analytics ? buildVerifiedManagementEvidence(analytics) : null),
@@ -927,6 +1043,10 @@ export default function DashboardPage() {
     setDateTo("");
     setSelectedShift("");
     setSelectedMachine("");
+    setSelectedProducts([]);
+    setSelectedOperators([]);
+    setSelectedDowntimeReasons([]);
+    setSelectedDataQualityStatuses([]);
   }
 
   function acknowledgeAlerts(alerts: OperationalAlert[]): void {
@@ -972,7 +1092,20 @@ export default function DashboardPage() {
       selectedShift,
       selectedMachine,
       machines,
+      alerts: scopedOperationalAlerts,
+      generatedAt: new Date().toISOString(),
+      lastSuccessfulSyncAt: syncState.lastSuccessfulSyncAt,
+      dataSource:
+        sourceKind === "database"
+          ? "Read-only MySQL"
+          : sourceMode === "live-file"
+            ? "Connected Excel workbook"
+            : "Uploaded Excel snapshot",
     });
+  }
+
+  function printFilteredReport(): void {
+    window.print();
   }
 
   if (!canonical || !analytics || !filterOptions) {
@@ -1020,6 +1153,23 @@ export default function DashboardPage() {
       : `${readableDate(analytics.scope.dateFrom)} – ${readableDate(
           analytics.scope.dateTo,
         )}`;
+  const latestRecordEpoch = Math.max(
+    ...analytics.records.productionIntervals.map(
+      (record) => record.endEpochMs ?? record.startEpochMs ?? 0,
+    ),
+    ...analytics.records.downtimeEvents.map(
+      (record) => record.endEpochMs ?? record.startEpochMs ?? 0,
+    ),
+    0,
+  );
+  const latestRecordAt =
+    latestRecordEpoch > 0
+      ? new Date(latestRecordEpoch).toISOString()
+      : null;
+  const resolvedManagementSummary =
+    aiManagementSummary?.evidenceDigest === managementEvidence?.evidenceDigest
+      ? aiManagementSummary
+      : deterministicManagementSummary;
 
   const renderOverview = () => (
     <div className="view-stack tab-enter">
@@ -1029,7 +1179,11 @@ export default function DashboardPage() {
           value={percent(periodOee.availability)}
           detail="Operative time ÷ planned production time"
           tone="emerald"
-        />
+        >
+          <InfoTooltip label="availability-formula-help">
+            Planned production time equals Shift Time minus Allowed Time.
+          </InfoTooltip>
+        </KpiCard>
         <KpiCard
           label="Performance"
           value={percent(periodOee.performance)}
@@ -1047,6 +1201,36 @@ export default function DashboardPage() {
           value={percent(analytics.oee.period.finalOee)}
           detail="Availability × Performance × Quality"
           tone="rose"
+        >
+          <MetricStatus
+            label={analytics.oee.period.finalOeeReadiness}
+            tone={
+              analytics.oee.period.finalOeeReadiness === "ready"
+                ? "emerald"
+                : "amber"
+            }
+          />
+        </KpiCard>
+      </section>
+
+      <section className="freshness-banner" aria-label="Data freshness">
+        <div>
+          <span>Latest source record</span>
+          <strong>{readableTimestamp(latestRecordAt)}</strong>
+        </div>
+        <div>
+          <span>Last successful synchronization</span>
+          <strong>{readableTimestamp(syncState.lastSuccessfulSyncAt)}</strong>
+        </div>
+        <MetricStatus
+          label={syncStatusLabel}
+          tone={
+            syncState.status === "live"
+              ? "emerald"
+              : syncState.status === "error" || syncState.status === "stale"
+                ? "rose"
+                : "amber"
+          }
         />
       </section>
 
@@ -1668,7 +1852,8 @@ export default function DashboardPage() {
             </span>
           }
         >
-          <div className="designed-table">
+          {downtime.events.length ? (
+          <TableFrame label="Filtered downtime events">
             <table>
               <thead>
                 <tr>
@@ -1708,7 +1893,13 @@ export default function DashboardPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableFrame>
+          ) : (
+            <EmptyPanel
+              title="No downtime events"
+              message="No stoppage records match the current filters."
+            />
+          )}
         </Panel>
       </div>
     );
@@ -1834,6 +2025,85 @@ export default function DashboardPage() {
           </p>
         </Panel>
       </div>
+
+      <Panel
+        eyebrow="Record-level evidence"
+        title="Affected source rows and recommended action"
+        action={
+          <span className="panel-badge">
+            {integerFormat.format(
+              analytics.dataQuality.structuredFindings.length,
+            )}{" "}
+            findings
+          </span>
+        }
+      >
+        {analytics.dataQuality.structuredFindings.length ? (
+          <TableFrame label="Structured data-quality findings">
+            <table>
+              <thead>
+                <tr>
+                  <th>Severity</th>
+                  <th>Machine / shift</th>
+                  <th>Product</th>
+                  <th>Finding</th>
+                  <th>Reported / expected</th>
+                  <th>Source row</th>
+                  <th>Recommended action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {analytics.dataQuality.structuredFindings
+                  .slice(0, 250)
+                  .map((finding) => (
+                    <tr key={finding.id}>
+                      <td>
+                        <span
+                          className={`table-chip ${
+                            finding.severity === "error"
+                              ? "critical"
+                              : finding.severity === "warning"
+                                ? "warning"
+                                : "neutral"
+                          }`}
+                        >
+                          {finding.severity}
+                        </span>
+                      </td>
+                      <td>
+                        <strong>{finding.machine}</strong>
+                        <small>{finding.shift}</small>
+                      </td>
+                      <td>{finding.product}</td>
+                      <td>
+                        <strong>{finding.code.replaceAll("_", " ")}</strong>
+                        <small>{finding.fieldName}</small>
+                      </td>
+                      <td>
+                        <strong>{String(finding.reportedValue ?? "Missing")}</strong>
+                        <small>
+                          Expected {String(finding.expectedValue ?? "Review")}
+                        </small>
+                      </td>
+                      <td>
+                        {finding.sourceSheet}
+                        <small>Row {finding.sourceRow}</small>
+                      </td>
+                      <td className="action-cell">
+                        {finding.recommendedAction}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </TableFrame>
+        ) : (
+          <EmptyPanel
+            title="No questionable records"
+            message="No structured findings match the active filters."
+          />
+        )}
+      </Panel>
     </div>
   );
 
@@ -1913,17 +2183,30 @@ export default function DashboardPage() {
               </div>
             </button>
           ))}
+          {!visibleMachines.length ? (
+            <EmptyPanel
+              title="No machines found"
+              message="Change the machine search, state, or global analytics filters."
+            />
+          ) : null}
         </section>
 
         {selectedMachineView ? (
-          <aside className="machine-detail glass-panel">
-            <header>
-              <div>
-                <span>{selectedMachineView.id} · Calculated state</span>
-                <h2>{selectedMachineView.name}</h2>
-              </div>
+          <SidePanel
+            label={`${selectedMachineView.id} · Calculated state`}
+            title={selectedMachineView.name}
+          >
+            <div className="side-panel-status">
               <StatusChip status={selectedMachineView.status} />
-            </header>
+            </div>
+            <div className="current-interval-card">
+              <span>Latest filtered production interval</span>
+              <strong>{selectedMachineView.latestProduct}</strong>
+              <p>
+                {selectedMachineView.latestShift} ·{" "}
+                {readableTimestamp(selectedMachineView.latestRecordAt)}
+              </p>
+            </div>
             <div className="verified-metric-grid">
               <article>
                 <span>Production</span>
@@ -1985,7 +2268,7 @@ export default function DashboardPage() {
                 <small>Availability × Performance × Quality</small>
               </div>
             </div>
-          </aside>
+          </SidePanel>
         ) : null}
       </div>
     </div>
@@ -2002,10 +2285,7 @@ export default function DashboardPage() {
       ...shiftPolicyOee.keys(),
       ...shiftDowntime.keys(),
     ]);
-    const managementSummary =
-      aiManagementSummary?.evidenceDigest === managementEvidence?.evidenceDigest
-        ? aiManagementSummary
-        : deterministicManagementSummary;
+    const managementSummary = resolvedManagementSummary;
     return (
       <div className="view-stack tab-enter">
         <section className="section-intro report-intro">
@@ -2013,16 +2293,24 @@ export default function DashboardPage() {
             <span className="eyebrow">Management reporting</span>
             <h1>Filtered operations report</h1>
             <p>
-              The report and all seven Excel worksheets use the current global
-              date, shift and machine filters.
+              The printable report and all ten Excel worksheets use the same
+              verified analytics selection shown on this dashboard.
             </p>
           </div>
-          <button
-            className="button button-primary export-button"
-            onClick={exportFilteredReport}
-          >
-            <span>⇩</span> Export Excel (.xlsx)
-          </button>
+          <div className="report-actions">
+            <button
+              className="button button-secondary"
+              onClick={printFilteredReport}
+            >
+              <span>▣</span> Print / Save PDF
+            </button>
+            <button
+              className="button button-primary export-button"
+              onClick={exportFilteredReport}
+            >
+              <span>⇩</span> Export Excel (.xlsx)
+            </button>
+          </div>
         </section>
 
         <section className="report-kpi-grid">
@@ -2205,6 +2493,58 @@ export default function DashboardPage() {
             ) : null}
           </Panel>
         </div>
+
+        <Panel
+          eyebrow="Quality and loss detail"
+          title="Rejection, rework, scrap and OEE readiness"
+        >
+          <div className="report-quality-grid">
+            <article>
+              <span>Rejected quantity</span>
+              <strong>
+                {integerFormat.format(
+                  analytics.quality.period.totals.rejectedQuantity,
+                )}
+              </strong>
+            </article>
+            <article>
+              <span>Rework quantity</span>
+              <strong>
+                {integerFormat.format(
+                  analytics.quality.period.totals.reworkedQuantity,
+                )}
+              </strong>
+            </article>
+            <article>
+              <span>Estimated scrap</span>
+              <strong>
+                {numberFormat.format(
+                  analytics.quality.period.totals.estimatedScrap,
+                )}
+              </strong>
+            </article>
+            <article>
+              <span>System Off</span>
+              <strong>
+                {numberFormat.format(
+                  hours(
+                    analytics.downtime.period.totals
+                      .reportedSystemOffSeconds,
+                  ),
+                )}{" "}
+                h
+              </strong>
+            </article>
+            <article>
+              <span>Quality confidence</span>
+              <strong>{analytics.oee.period.qualityConfidence}</strong>
+            </article>
+            <article>
+              <span>Final OEE readiness</span>
+              <strong>{analytics.oee.period.finalOeeReadiness}</strong>
+            </article>
+          </div>
+        </Panel>
       </div>
     );
   };
@@ -2436,7 +2776,47 @@ export default function DashboardPage() {
           </button>
         </section>
 
-        {loadError ? <div className="error-banner">{loadError}</div> : null}
+        <section className="advanced-filter-bar" aria-label="Advanced analytics filters">
+          <MultiSelectFilter
+            label="Products"
+            options={filterOptions.products}
+            values={selectedProducts}
+            onChange={setSelectedProducts}
+          />
+          <MultiSelectFilter
+            label="Operators"
+            options={filterOptions.operators}
+            values={selectedOperators}
+            onChange={setSelectedOperators}
+          />
+          <MultiSelectFilter
+            label="Downtime reasons"
+            options={filterOptions.downtimeReasons}
+            values={selectedDowntimeReasons}
+            onChange={setSelectedDowntimeReasons}
+          />
+          <MultiSelectFilter
+            label="Data trust"
+            options={filterOptions.dataQualityStatuses}
+            values={selectedDataQualityStatuses}
+            onChange={setSelectedDataQualityStatuses}
+          />
+        </section>
+
+        {loadError ? (
+          <ErrorPanel
+            title="Workbook synchronization failed"
+            message={loadError}
+            action={
+              <button
+                className="button button-secondary"
+                onClick={() => void syncEngine.current?.syncNow()}
+              >
+                Retry
+              </button>
+            }
+          />
+        ) : null}
         {syncNotice ? (
           <div className="sync-notification" role="status">
             <div>
@@ -2475,6 +2855,24 @@ export default function DashboardPage() {
           <span>Standalone intelligence module · v1.0</span>
         </footer>
       </section>
+      <PrintableMmsReport
+        analytics={analytics}
+        machines={machines}
+        alerts={scopedOperationalAlerts}
+        managementSummary={resolvedManagementSummary}
+        metadata={{
+          company: canonical.source.company,
+          sourceFileName: canonical.source.fileName,
+          generatedAt: new Date().toISOString(),
+          lastSuccessfulSyncAt: syncState.lastSuccessfulSyncAt,
+          dataSource:
+            sourceKind === "database"
+              ? "Read-only MySQL"
+              : sourceMode === "live-file"
+                ? "Connected Excel workbook"
+                : "Uploaded Excel snapshot",
+        }}
+      />
     </div>
   );
 }
