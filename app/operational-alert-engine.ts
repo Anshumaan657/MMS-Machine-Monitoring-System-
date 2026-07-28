@@ -6,6 +6,12 @@ import type {
 } from "./mms.ts";
 import type { MmsDataSourceKind } from "./mms-data-source.ts";
 import type { MmsSyncStatus } from "./synchronization-engine.ts";
+import {
+  evaluateCalculationPolicy,
+  type CalculationPolicySelection,
+  type PolicyProductionMetrics,
+} from "./calculation-policy.ts";
+import { buildDowntimeAnalytics } from "./downtime-engine.ts";
 
 export type OperationalAlertType =
   | "EXCESSIVE_DOWNTIME"
@@ -263,6 +269,7 @@ function quantity(value: number): AlertMetricValue {
 
 function productionAlerts(
   interval: ProductionInterval,
+  policyMetrics: PolicyProductionMetrics | undefined,
   config: OperationalAlertConfig,
   acknowledgements: AlertAcknowledgements,
 ): OperationalAlert[] {
@@ -296,8 +303,12 @@ function productionAlerts(
     });
   }
 
-  const produced = interval.calculations.producedQuantityUsed;
-  const target = interval.quantities.shiftTarget;
+  const produced = policyMetrics
+    ? policyMetrics.producedQuantity
+    : interval.calculations.producedQuantityUsed;
+  const target = policyMetrics
+    ? policyMetrics.shiftTarget
+    : interval.quantities.shiftTarget;
   if (produced != null && target != null && target > 0) {
     const attainment = produced / target;
     if (attainment < config.thresholds.minimumProductionAttainment) {
@@ -317,7 +328,9 @@ function productionAlerts(
     }
   }
 
-  const achievedCycle = interval.calculations.achievedCycleTimeSeconds;
+  const achievedCycle = policyMetrics
+    ? policyMetrics.achievedCycleTimeSeconds
+    : interval.calculations.achievedCycleTimeSeconds;
   const standardCycle = interval.cycleTimesSeconds.standard;
   if (
     achievedCycle != null &&
@@ -342,7 +355,9 @@ function productionAlerts(
     }
   }
 
-  const productionLoss = interval.calculations.productionLoss;
+  const productionLoss = policyMetrics
+    ? policyMetrics.productionLoss
+    : interval.calculations.productionLoss;
   if (
     productionLoss != null &&
     productionLoss > config.thresholds.highProductionLossQuantity
@@ -563,16 +578,64 @@ export function buildOperationalAlerts(
   options: {
     acknowledgements?: AlertAcknowledgements;
     synchronization?: AlertSynchronizationContext;
+    calculationPolicy?: CalculationPolicySelection;
   } = {},
 ): OperationalAlert[] {
   const config = normalizeOperationalAlertConfig(configInput);
   const acknowledgements = options.acknowledgements ?? {};
+  const policyEvaluation = evaluateCalculationPolicy(
+    data.productionIntervals,
+    options.calculationPolicy,
+  );
+  const downtimeAnalytics = buildDowntimeAnalytics(
+    data.downtimeEvents.map((event) => ({
+      id: event.id,
+      machine: event.machine,
+      shift: event.shift,
+      date: event.date,
+      startEpochMs: event.startEpochMs,
+      endEpochMs: event.endEpochMs,
+      startAt: event.startAt,
+      endAt: event.endAt,
+      durationSeconds: event.durationSeconds,
+      productName: event.productName,
+      reasonType: event.reasonType,
+      reason: event.reason,
+      isUnreported: event.isUnreported,
+      hasOverlap: event.issueCodes.includes("OVERLAPPING_DOWNTIME_EVENT"),
+      reportedMachineHourLoss: event.reportedMachineHourLoss,
+    })),
+    data.productionIntervals.map((interval) => ({
+      id: interval.id,
+      machine: interval.machine,
+      shift: interval.shift,
+      date: interval.date,
+      startEpochMs: interval.startEpochMs,
+      endEpochMs: interval.endEpochMs,
+      productName: interval.product.productName,
+      additionalOvertimeThresholdSeconds:
+        interval.timesSeconds.additionalOvertime,
+      machineHourCost: interval.costs.machinePerHour,
+      reportedNonOperativeSeconds: interval.timesSeconds.nonOperative,
+      reportedSystemOffSeconds: interval.timesSeconds.systemOff,
+    })),
+    {
+      financialLossMode: policyEvaluation.downtime.financialLossMode,
+      machineHourCostByMachine:
+        policyEvaluation.downtime.machineHourCostByMachine,
+    },
+  );
   const intelligenceById = new Map(
-    data.downtimeAnalytics.events.map((event) => [event.id, event]),
+    downtimeAnalytics.events.map((event) => [event.id, event]),
   );
   const alerts = [
     ...data.productionIntervals.flatMap((interval) =>
-      productionAlerts(interval, config, acknowledgements),
+      productionAlerts(
+        interval,
+        policyEvaluation.productionByRecordId.get(interval.id),
+        config,
+        acknowledgements,
+      ),
     ),
     ...data.downtimeEvents.flatMap((event) =>
       downtimeAlerts(event, intelligenceById, config, acknowledgements),

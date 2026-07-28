@@ -272,8 +272,8 @@ test("recalculates every analytics area for an exact date", () => {
   assert.equal(result.records.productionIntervals.length, 2);
   assert.equal(result.records.downtimeEvents.length, 1);
   assert.equal(result.production.totals.producedQuantity, 150);
-  assert.equal(result.production.totals.shiftTarget, 200);
-  assert.equal(result.production.targetAttainment, 75);
+  assert.equal(result.production.totals.shiftTarget, 356.25);
+  assert.equal(result.production.targetAttainment, 42.105263);
   assert.equal(
     result.availabilityPerformance.period.totals.operativeTimeSeconds,
     46_800,
@@ -281,6 +281,8 @@ test("recalculates every analytics area for an exact date", () => {
   assert.equal(result.quality.period.totals.rejectedQuantity, 3);
   assert.equal(result.quality.period.totals.reworkedQuantity, 3);
   assert.equal(result.quality.period.totals.estimatedScrap, 20);
+  assert.equal(result.oee.period.quality, 0.96);
+  assert.equal(result.oee.period.finalOee, 0.416);
   assert.equal(result.downtime.period.totals.downtimeSeconds, 3_600);
   assert.equal(result.downtime.period.totals.calculatedMachineHourLoss, 600);
   assert.equal(result.dataQuality.quantityMismatchRecords, 1);
@@ -374,4 +376,39 @@ test("legacy summary uses the complete selected period instead of latest day", (
   assert.equal(filtered.latestDay.production, 150);
   assert.equal(filtered.latestDay.date, "2026-07-01");
   assert.equal(filtered.selection.activeFilterCount, 1);
+});
+
+test("keeps filtered record selection identical across calculation policies", () => {
+  const data = canonicalData();
+  const filters = {
+    dateRange: { from: "2026-07-01", to: "2026-07-02" },
+    machine: "M-01",
+    shift: "Shift 1",
+    product: "PRODUCT-A",
+    operator: "OP-A",
+    downtimeReason: "Tool failure",
+  };
+  const confirmed = queryMmsAnalytics(data, filters);
+  const provisional = queryMmsAnalytics(data, filters, {
+    policyId: "mms-reconciled-99-37-v1",
+    allowProvisional: true,
+    runtimeEnvironment: "test",
+  });
+
+  assert.equal(confirmed.calculationPolicy.status, "confirmed");
+  assert.equal(provisional.calculationPolicy.status, "provisional");
+  assert.deepEqual(
+    confirmed.records.productionIntervals.map((record) => record.id),
+    provisional.records.productionIntervals.map((record) => record.id),
+  );
+  assert.deepEqual(
+    confirmed.records.downtimeEvents.map((record) => record.id),
+    provisional.records.downtimeEvents.map((record) => record.id),
+  );
+  assert.deepEqual(confirmed.filters, provisional.filters);
+  assert.deepEqual(confirmed.scope, provisional.scope);
+  assert.notEqual(
+    confirmed.production.totals.productionLoss,
+    provisional.production.totals.productionLoss,
+  );
 });

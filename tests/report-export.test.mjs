@@ -8,6 +8,10 @@ import {
 } from "../app/report-export.ts";
 import { exactCanonicalFixture } from "./phase12-fixture.mjs";
 
+function rowByLabel(rows, label) {
+  return rows.find((row) => row[0] === label);
+}
+
 test("exports all seven filtered analytics worksheets", () => {
   const data = exactCanonicalFixture();
   const analytics = queryMmsAnalytics(data, {
@@ -42,13 +46,25 @@ test("exports all seven filtered analytics worksheets", () => {
     reopened.Sheets["Daily Overview"],
     { header: 1 },
   );
-  assert.deepEqual(overview[5], ["Shift", "Shift 1"]);
-  assert.deepEqual(overview[6], ["Machine", "MACHINE A"]);
-  assert.deepEqual(overview[9], ["Production", 200, "Quantity"]);
-  assert.deepEqual(overview[15], [
+  assert.deepEqual(rowByLabel(overview, "Shift"), ["Shift", "Shift 1"]);
+  assert.deepEqual(rowByLabel(overview, "Machine"), ["Machine", "MACHINE A"]);
+  assert.deepEqual(rowByLabel(overview, "Calculation policy"), [
+    "Calculation policy",
+    "mms-direct-quantity-v2",
+  ]);
+  assert.deepEqual(rowByLabel(overview, "Policy status"), [
+    "Policy status",
+    "confirmed",
+  ]);
+  assert.deepEqual(rowByLabel(overview, "Production"), [
+    "Production",
+    200,
+    "Quantity",
+  ]);
+  assert.deepEqual(rowByLabel(overview, "Final OEE"), [
     "Final OEE",
-    "Pending",
-    "Not calculated",
+    9.85,
+    "Percent",
   ]);
   assert.equal(
     filteredReportFileName(analytics),
@@ -72,9 +88,13 @@ test("export contents change when the analytics filter changes", () => {
     workbook.Sheets["Daily Overview"],
     { header: 1 },
   );
-  assert.deepEqual(overview[6], [
+  assert.deepEqual(rowByLabel(overview, "Machine"), [
     "Machine",
     "MACHINE THAT DOES NOT EXIST",
   ]);
-  assert.deepEqual(overview[9], ["Production", 0, "Quantity"]);
+  assert.deepEqual(rowByLabel(overview, "Production"), [
+    "Production",
+    0,
+    "Quantity",
+  ]);
 });

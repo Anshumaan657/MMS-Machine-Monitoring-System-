@@ -153,7 +153,18 @@ function canonicalData() {
       fileName: "sample.xlsx",
       parsedAt: "2026-07-26T00:00:00.000Z",
     },
-    productionIntervals: [production()],
+    productionIntervals: [
+      production({
+        machine: "M-01",
+        issueCodes: ["MISSING_OPERATOR"],
+        isValid: true,
+      }),
+      production({
+        id: "PI-2",
+        sourceRow: 8,
+        issueCodes: ["MISSING_MACHINE", "MISSING_OPERATOR"],
+      }),
+    ],
     downtimeEvents: [event, invalid],
     availabilityPerformance: null,
     qualityAnalytics: null,
@@ -288,9 +299,9 @@ test("uses configurable thresholds and per-alert enable switches", () => {
     thresholds: {
       excessiveDowntimeSeconds: 10_000,
       systemOffSeconds: 1_000,
-      minimumProductionAttainment: 0.2,
-      maximumCycleTimeRatio: 3,
-      highProductionLossQuantity: 100,
+      minimumProductionAttainment: 0.05,
+      maximumCycleTimeRatio: 10,
+      highProductionLossQuantity: 500,
       highMachineHourLoss: 5_000,
     },
   });

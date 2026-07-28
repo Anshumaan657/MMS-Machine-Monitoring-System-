@@ -81,7 +81,8 @@ Rules:
 - Never write any digit, number, percentage, currency amount, date, duration, machine ID, shift ID, or quantity in prose. The application renders exact evidence separately.
 - Cite one or more supplied evidence IDs for every statement and recommendation.
 - Do not introduce operational facts not present in the evidence.
-- Keep Quality and Final OEE out of all performance claims.
+- Quality and Final OEE may be discussed only when their verified evidence IDs
+  are supplied; never calculate or infer them.
 - State uncertainty when evidence is marked caveat or pending.
 - Recommendations must identify an action supported by cited evidence.
 - Be concise and use plain management language.`;
@@ -221,7 +222,7 @@ export function validateAiManagementSummary(
       validIds,
     ),
     recommendations,
-    pendingClaims: ["Quality", "Final OEE"],
+    pendingClaims: [...evidence.pendingClaims],
   };
 }
 

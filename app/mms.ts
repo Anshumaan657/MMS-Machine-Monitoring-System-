@@ -44,11 +44,32 @@ export type {
   FilteredDataQuality,
   FilteredMmsAnalytics,
   MmsAnalyticsFilters,
+  MmsAnalyticsQueryOptions,
   MmsFilterOptions,
   NormalizedMmsAnalyticsFilters,
+  PolicyOeeAggregate,
+  PolicyOeeAnalytics,
   ProductionQueryAggregate,
   ProductionQueryAnalytics,
 } from "./analytics-query-engine.ts";
+export {
+  calculationPolicyMetadata,
+  DEFAULT_CALCULATION_POLICY_ID,
+  evaluateCalculationPolicy,
+  listCalculationPolicies,
+  resolveCalculationPolicy,
+} from "./calculation-policy.ts";
+export type {
+  CalculationFormulaSet,
+  CalculationPolicyEvaluation,
+  CalculationPolicyId,
+  CalculationPolicyMetadata,
+  CalculationPolicyRuntimeEnvironment,
+  CalculationPolicySelection,
+  CalculationPolicyStatus,
+  PolicyProductionMetrics,
+  ResolvedCalculationPolicy,
+} from "./calculation-policy.ts";
 export type {
   DowntimeAggregate,
   DowntimeAnalytics,

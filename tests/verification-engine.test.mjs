@@ -52,7 +52,7 @@ test("compares selected dashboard results supplied by 3D", () => {
         },
         expected: {
           production: 200,
-          shiftTarget: 250,
+          shiftTarget: 2_000,
           availabilityPercent: 10,
           performancePercent: 100,
           downtimeHours: 0.5,
