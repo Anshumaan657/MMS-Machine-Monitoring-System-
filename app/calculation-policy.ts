@@ -523,18 +523,9 @@ function provisionalMetrics(
     exclusionReason: record.oeeComponents.exclusionReason,
   });
   const quality = qualityMetrics(record, producedQuantity);
-  const finalOee =
-    oeeComponents.isEligible &&
-    oeeComponents.availability != null &&
-    oeeComponents.performance != null &&
-    quality.quality != null
-      ? rounded(
-          oeeComponents.availability *
-            oeeComponents.performance *
-            quality.quality,
-          8,
-        )
-      : null;
+  // The sandbox may calculate component evidence, but a provisional policy
+  // can never publish an official Final OEE value.
+  const finalOee = null;
 
   return {
     recordId: record.id,
