@@ -121,6 +121,8 @@ export type {
 export type {
   QualityAggregate,
   QualityAnalytics,
+  QualityCalculationStatus,
+  QualityConfidence,
   QualityIssueCode,
   QualityRecordInput,
   QualityRecordResult,
@@ -1238,6 +1240,8 @@ export function canonicalizeMmsRows({
       rejectedQuantity: interval.quantities.rejected,
       reworkedQuantity: interval.quantities.reworked,
       scrapPerPart: interval.scrapPerPart,
+      policyStatus: "confirmed",
+      requiredDataReliable: interval.isValid,
     })),
   );
   const downtimeAnalytics = buildDowntimeAnalytics(

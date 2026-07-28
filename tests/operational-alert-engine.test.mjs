@@ -6,6 +6,7 @@ import {
   buildOperationalAlerts,
   normalizeOperationalAlertConfig,
 } from "../app/operational-alert-engine.ts";
+import { queryMmsAnalytics } from "../app/analytics-query-engine.ts";
 
 function production(overrides = {}) {
   return {
@@ -335,5 +336,32 @@ test("normalizes invalid threshold values to safe defaults", () => {
   assert.equal(
     normalized.thresholds.minimumProductionAttainment,
     DEFAULT_OPERATIONAL_ALERT_CONFIG.thresholds.minimumProductionAttainment,
+  );
+});
+
+test("uses the exact unified analytics record selection for alerts", () => {
+  const data = canonicalData();
+  const analytics = queryMmsAnalytics(data, { machine: "M-01" });
+  const alerts = buildOperationalAlerts(data, {}, { analytics });
+
+  assert.ok(alerts.length > 0);
+  assert.ok(
+    alerts.every(
+      (alert) =>
+        alert.machine === "M-01" ||
+        alert.machine === "All machines",
+    ),
+  );
+  assert.ok(
+    alerts.every(
+      (alert) =>
+        alert.supportingRecord.sheet === "Synchronization" ||
+        analytics.records.productionIntervals.some(
+          (record) => record.id === alert.supportingRecord.id,
+        ) ||
+        analytics.records.downtimeEvents.some(
+          (record) => record.id === alert.supportingRecord.id,
+        ),
+    ),
   );
 });
