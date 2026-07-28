@@ -22,6 +22,33 @@ import {
   buildQualityAnalytics,
   type QualityAnalytics,
 } from "./quality-engine.ts";
+import {
+  detectMmsWorkbookFormat,
+  extractMmsWorkbookContractRows,
+  MMS_WORKBOOK_CONTRACT_VERSION,
+  MMS_WORKBOOK_LIMITS,
+  MmsWorkbookCompatibilityError,
+  type MmsWorkbookCompatibilityReport,
+} from "./mms-workbook-contract.ts";
+
+export {
+  detectMmsWorkbookFormat,
+  inspectMmsWorkbookCompatibility,
+  MMS_WORKBOOK_CONTRACT_VERSION,
+  MMS_WORKBOOK_LIMITS,
+  MMS_WORKBOOK_SCHEMA,
+  MmsWorkbookCompatibilityError,
+  normalizeMmsWorkbookLabel,
+} from "./mms-workbook-contract.ts";
+export type {
+  MmsCanonicalSheetName,
+  MmsCompatibilitySeverity,
+  MmsCompatibilityStatus,
+  MmsWorkbookCompatibilityIssue,
+  MmsWorkbookCompatibilityReport,
+  MmsWorkbookFormat,
+  MmsWorkbookSheetCompatibility,
+} from "./mms-workbook-contract.ts";
 
 export type {
   AvailabilityPerformanceAnalytics,
@@ -254,6 +281,11 @@ export type CanonicalMmsData = {
     errorCount: number;
     warningCount: number;
   };
+  /**
+   * Present for Excel imports. Database and already-normalized row sources do
+   * not need to emulate a workbook compatibility report.
+   */
+  importCompatibility?: MmsWorkbookCompatibilityReport;
 };
 
 export type MachineSummary = {
@@ -338,6 +370,7 @@ export type CanonicalMmsRowsInput = {
   productionRows: MmsSourceRow[];
   downtimeRows: MmsSourceRow[];
   parsedAt?: string;
+  importCompatibility?: MmsWorkbookCompatibilityReport;
 };
 
 type TimelineRecord = {
@@ -404,29 +437,52 @@ function parsedTimestamp(value: unknown): Date | null {
   }
 
   const raw = clean(value).replace(/\s+/g, " ");
-  const match = raw.match(
-    /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i,
+  const dayFirst = raw.match(
+    /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i,
   );
+  const yearFirst = raw.match(
+    /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i,
+  );
+  const match = dayFirst
+    ? {
+        dd: dayFirst[1],
+        mm: dayFirst[2],
+        yyyy: dayFirst[3],
+        hh: dayFirst[4] ?? "0",
+        min: dayFirst[5] ?? "0",
+        sec: dayFirst[6] ?? "0",
+        meridiem: dayFirst[7],
+      }
+    : yearFirst
+      ? {
+          dd: yearFirst[3],
+          mm: yearFirst[2],
+          yyyy: yearFirst[1],
+          hh: yearFirst[4] ?? "0",
+          min: yearFirst[5] ?? "0",
+          sec: yearFirst[6] ?? "0",
+          meridiem: yearFirst[7],
+        }
+      : null;
   if (!match) return null;
 
-  const [, dd, mm, yyyy, hh = "0", min = "0", sec = "0", meridiem] = match;
-  let hour = Number(hh);
-  if (meridiem?.toUpperCase() === "PM" && hour < 12) hour += 12;
-  if (meridiem?.toUpperCase() === "AM" && hour === 12) hour = 0;
+  let hour = Number(match.hh);
+  if (match.meridiem?.toUpperCase() === "PM" && hour < 12) hour += 12;
+  if (match.meridiem?.toUpperCase() === "AM" && hour === 12) hour = 0;
 
   const result = new Date(
-    Number(yyyy),
-    Number(mm) - 1,
-    Number(dd),
+    Number(match.yyyy),
+    Number(match.mm) - 1,
+    Number(match.dd),
     hour,
-    Number(min),
-    Number(sec),
+    Number(match.min),
+    Number(match.sec),
   );
   if (
     Number.isNaN(result.getTime()) ||
-    result.getFullYear() !== Number(yyyy) ||
-    result.getMonth() !== Number(mm) - 1 ||
-    result.getDate() !== Number(dd)
+    result.getFullYear() !== Number(match.yyyy) ||
+    result.getMonth() !== Number(match.mm) - 1 ||
+    result.getDate() !== Number(match.dd)
   ) {
     return null;
   }
@@ -457,6 +513,13 @@ function normalizedIntervalEnd(
 }
 
 function clockDurationSeconds(value: unknown): number | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return (
+      value.getHours() * SECONDS_PER_HOUR +
+      value.getMinutes() * 60 +
+      value.getSeconds()
+    );
+  }
   if (typeof value === "number" && Number.isFinite(value)) {
     return Math.round(value * SECONDS_PER_DAY);
   }
@@ -550,41 +613,6 @@ function isProductTotalRow(row: MmsSourceRow): boolean {
 
 function isDowntimeTotalRow(row: MmsSourceRow): boolean {
   return isTotalLabel(row.values.Shift) || isTotalLabel(row.values.Machine);
-}
-
-function extractRows(
-  workbook: XLSX.WorkBook,
-  requestedName: "Product Log Book" | "Down Time Details",
-): MmsSourceRow[] {
-  const sheetName =
-    workbook.SheetNames.find(
-      (name) => name.trim().toLowerCase() === requestedName.toLowerCase(),
-    ) ??
-    workbook.SheetNames.find((name) =>
-      name.toLowerCase().includes(requestedName.toLowerCase()),
-    );
-  if (!sheetName) throw new Error(`The workbook does not contain a “${requestedName}” sheet.`);
-
-  const grid = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[sheetName], {
-    header: 1,
-    defval: null,
-    raw: true,
-  });
-  const headerIndex = grid.findIndex(
-    (row) =>
-      clean(row?.[0]).toLowerCase() === "date" &&
-      clean(row?.[1]).toLowerCase() === "machine",
-  );
-  if (headerIndex < 0) throw new Error(`Could not find the data headers in “${sheetName}”.`);
-
-  const headers = grid[headerIndex].map(clean);
-  return grid
-    .slice(headerIndex + 1)
-    .map((row, index) => ({
-      rowNumber: headerIndex + index + 2,
-      values: Object.fromEntries(headers.map((header, column) => [header, row[column]])),
-    }))
-    .filter((row) => Object.values(row.values).some((value) => !isBlankCell(value)));
 }
 
 function addIssue(
@@ -1161,6 +1189,7 @@ export function canonicalizeMmsRows({
   productionRows,
   downtimeRows,
   parsedAt = new Date().toISOString(),
+  importCompatibility,
 }: CanonicalMmsRowsInput): CanonicalMmsData {
   const productDataRows = productionRows.filter(
     (row) => !isProductTotalRow(row),
@@ -1266,20 +1295,27 @@ export function canonicalizeMmsRows({
       errorCount: validationIssues.filter((issue) => issue.severity === "error").length,
       warningCount: validationIssues.filter((issue) => issue.severity === "warning").length,
     },
+    importCompatibility,
   };
 }
 
 export function canonicalizeWorkbook(
   workbook: XLSX.WorkBook,
   fileName: string,
+  byteLength: number | null = null,
 ): CanonicalMmsData {
+  const extracted = extractMmsWorkbookContractRows(workbook, {
+    fileName,
+    byteLength,
+  });
   return canonicalizeMmsRows({
     company:
       clean(workbook.Sheets[workbook.SheetNames[0]]?.A1?.v) ||
       "Imported MMS dataset",
     sourceName: fileName,
-    productionRows: extractRows(workbook, PRODUCT_SHEET),
-    downtimeRows: extractRows(workbook, DOWNTIME_SHEET),
+    productionRows: extracted.productionRows,
+    downtimeRows: extracted.downtimeRows,
+    importCompatibility: extracted.report,
   });
 }
 
@@ -1535,8 +1571,47 @@ export function parseMmsCanonicalFile(
   buffer: ArrayBuffer,
   fileName: string,
 ): CanonicalMmsData {
+  if (!detectMmsWorkbookFormat(fileName)) {
+    const workbook = XLSX.utils.book_new();
+    throw new MmsWorkbookCompatibilityError({
+      contractVersion: MMS_WORKBOOK_CONTRACT_VERSION,
+      status: "rejected",
+      file: {
+        name: fileName,
+        format: null,
+        byteLength: buffer.byteLength,
+        originalFilePreserved: true,
+      },
+      workbook: { sheetCount: workbook.SheetNames.length, estimatedRowsAcrossRequiredSheets: 0 },
+      sheets: [],
+      issues: [{
+        code: "UNSUPPORTED_FILE_FORMAT",
+        severity: "error",
+        message: `“${fileName}” is not supported. Upload an .xls or .xlsx workbook.`,
+      }],
+    });
+  }
+  if (buffer.byteLength > MMS_WORKBOOK_LIMITS.maximumFileBytes) {
+    throw new MmsWorkbookCompatibilityError({
+      contractVersion: MMS_WORKBOOK_CONTRACT_VERSION,
+      status: "rejected",
+      file: {
+        name: fileName,
+        format: detectMmsWorkbookFormat(fileName),
+        byteLength: buffer.byteLength,
+        originalFilePreserved: true,
+      },
+      workbook: { sheetCount: 0, estimatedRowsAcrossRequiredSheets: 0 },
+      sheets: [],
+      issues: [{
+        code: "FILE_TOO_LARGE",
+        severity: "error",
+        message: `Workbook size is ${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB; the safe limit is ${MMS_WORKBOOK_LIMITS.maximumFileBytes / 1024 / 1024} MB.`,
+      }],
+    });
+  }
   const workbook = XLSX.read(buffer, { cellDates: true, type: "array" });
-  return canonicalizeWorkbook(workbook, fileName);
+  return canonicalizeWorkbook(workbook, fileName, buffer.byteLength);
 }
 
 export function parseMmsFileWithRecords(
