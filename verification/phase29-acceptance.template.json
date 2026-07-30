@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "1.0",
+  "policy": {
+    "id": "mms-direct-quantity-v2",
+    "version": "2.0.0",
+    "status": "confirmed",
+    "confirmationReference": "verification/PHASE_29_CONFIRMATION.md"
+  },
+  "acceptanceTargetPercentage": 95,
+  "minimumComparableChecks": 20,
+  "tolerances": {
+    "productionQuantity": 0.01,
+    "shiftTarget": 0.01,
+    "operativeTimeTarget": 0.01,
+    "productionLoss": 0.01,
+    "availabilityPercent": 0.1,
+    "performancePercent": 0.1,
+    "goodQuantity": 0.01,
+    "qualityPercent": 0.1,
+    "finalOeePercent": 0.1,
+    "rejectedQuantity": 0.01,
+    "reworkedQuantity": 0.01,
+    "estimatedScrap": 0.01,
+    "downtimeHours": 0.02,
+    "systemOffHours": 0.02,
+    "financialLoss": 1,
+    "productionRecordCount": 0,
+    "downtimeEventCount": 0
+  },
+  "instructions": [
+    "Copy this file to verification-input/phase29-3d-results.json.",
+    "Enter 3D values only after applying identical filters in both systems.",
+    "Keep client values and evidence references private.",
+    "Add an explanation for every accepted mismatch.",
+    "Change finalSignoff only after 3D sends the requested written approval."
+  ],
+  "cases": [
+    {
+      "id": "3D-P29-01",
+      "scenario": "complete_single_product_shift",
+      "filters": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": ""
+      },
+      "expected": {},
+      "mismatchExplanations": {},
+      "evidenceReferences": []
+    },
+    {
+      "id": "3D-P29-02",
+      "scenario": "completed_product_change_interval",
+      "filters": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": ""
+      },
+      "expected": {},
+      "mismatchExplanations": {},
+      "evidenceReferences": []
+    },
+    {
+      "id": "3D-P29-03",
+      "scenario": "active_unfinished_interval",
+      "filters": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": ""
+      },
+      "expected": {},
+      "mismatchExplanations": {},
+      "evidenceReferences": []
+    },
+    {
+      "id": "3D-P29-04",
+      "scenario": "quantity_mismatch",
+      "filters": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": ""
+      },
+      "expected": {},
+      "mismatchExplanations": {},
+      "evidenceReferences": []
+    },
+    {
+      "id": "3D-P29-05",
+      "scenario": "production_above_target",
+      "filters": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": ""
+      },
+      "expected": {},
+      "mismatchExplanations": {},
+      "evidenceReferences": []
+    },
+    {
+      "id": "3D-P29-06",
+      "scenario": "quality_readiness",
+      "filters": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": ""
+      },
+      "expected": {},
+      "mismatchExplanations": {},
+      "evidenceReferences": []
+    },
+    {
+      "id": "3D-P29-07",
+      "scenario": "priced_downtime_event",
+      "filters": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "downtimeReason": ""
+      },
+      "expected": {},
+      "mismatchExplanations": {},
+      "evidenceReferences": []
+    },
+    {
+      "id": "3D-P29-08",
+      "scenario": "system_off_or_unreported",
+      "filters": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "downtimeReason": ""
+      },
+      "expected": {},
+      "mismatchExplanations": {},
+      "evidenceReferences": []
+    }
+  ],
+  "finalSignoff": {
+    "status": "pending",
+    "approvedBy": null,
+    "approvedAt": null,
+    "statement": null
+  }
+}
