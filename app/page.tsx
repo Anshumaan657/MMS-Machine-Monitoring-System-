@@ -10,13 +10,14 @@ import {
 } from "react";
 import {
   ExcelMmsDataSource,
+  validateMmsWorkbookUpload,
   type MmsDataSource,
   type MmsDataSourceKind,
 } from "./mms-data-source";
 import {
   getMmsFilterOptions,
   queryMmsAnalytics,
-} from "./mms";
+} from "./analytics-query-engine";
 import {
   createInitialMmsSyncState,
   MmsSynchronizationEngine,
@@ -26,6 +27,7 @@ import {
   OPERATIONAL_ALERT_LABELS,
   buildOperationalAlerts,
   normalizeOperationalAlertConfig,
+  reconcileOperationalAlertLifecycle,
 } from "./operational-alert-engine";
 import {
   buildDeterministicManagementSummary,
@@ -36,7 +38,6 @@ import {
   type ManagementSummary,
   type VerifiedManagementEvidence,
 } from "./management-summary-engine";
-import { downloadFilteredReport } from "./report-export";
 import {
   EmptyPanel,
   ErrorPanel,
@@ -70,6 +71,7 @@ import type {
 import type {
   MmsSyncChanges,
   MmsSyncLogEntry,
+  MmsImportHistoryEntry,
   MmsSyncState,
 } from "./synchronization-engine";
 
@@ -148,9 +150,12 @@ type ManagementSummaryApiResponse = {
 };
 
 const SYNC_LOG_STORAGE_KEY = "mms-intelligence-sync-logs-v1";
+const SYNC_HISTORY_STORAGE_KEY = "mms-intelligence-import-history-v1";
 const ALERT_CONFIG_STORAGE_KEY = "mms-intelligence-alert-config-v1";
 const ALERT_ACKNOWLEDGEMENT_STORAGE_KEY =
   "mms-intelligence-alert-acknowledgements-v1";
+const ALERT_LIFECYCLE_STORAGE_KEY =
+  "mms-intelligence-alert-lifecycle-v1";
 const SYNC_POLL_INTERVAL_MS = 60_000;
 const SYNC_STALE_AFTER_MS = 5 * 60_000;
 
@@ -309,6 +314,18 @@ function readStoredSyncLogs(): MmsSyncLogEntry[] {
   }
 }
 
+function readStoredSyncHistory(): MmsImportHistoryEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(SYNC_HISTORY_STORAGE_KEY) ?? "[]",
+    );
+    return Array.isArray(parsed) ? parsed.slice(-100) : [];
+  } catch {
+    return [];
+  }
+}
+
 function syncNoticeMessage(changes: MmsSyncChanges): string {
   return `${changes.added} new, ${changes.modified} modified and ${changes.removed} removed records synchronized.`;
 }
@@ -334,6 +351,18 @@ function readAlertAcknowledgements(): AlertAcknowledgements {
     return stored && typeof stored === "object" ? stored : {};
   } catch {
     return {};
+  }
+}
+
+function readAlertLifecycle(): OperationalAlert[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(ALERT_LIFECYCLE_STORAGE_KEY) ?? "[]",
+    );
+    return Array.isArray(stored) ? stored.slice(-2_000) : [];
+  } catch {
+    return [];
   }
 }
 
@@ -680,6 +709,9 @@ export default function DashboardPage() {
   );
   const [alertAcknowledgements, setAlertAcknowledgements] =
     useState<AlertAcknowledgements>(() => readAlertAcknowledgements());
+  const [alertLifecycle, setAlertLifecycle] = useState<OperationalAlert[]>(
+    () => readAlertLifecycle(),
+  );
   const [selectedAlertType, setSelectedAlertType] = useState<
     OperationalAlertType | "All"
   >("All");
@@ -716,6 +748,20 @@ export default function DashboardPage() {
   }, [syncState.logs]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || syncState.history.length === 0) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        SYNC_HISTORY_STORAGE_KEY,
+        JSON.stringify(syncState.history.slice(-100)),
+      );
+    } catch {
+      // Import history remains available in memory.
+    }
+  }, [syncState.history]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       window.localStorage.setItem(
@@ -741,6 +787,18 @@ export default function DashboardPage() {
       // Acknowledgements remain available for the current browser session.
     }
   }, [alertAcknowledgements]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        ALERT_LIFECYCLE_STORAGE_KEY,
+        JSON.stringify(alertLifecycle.slice(-2_000)),
+      );
+    } catch {
+      // Alert lifecycle remains available for the current session.
+    }
+  }, [alertLifecycle]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -824,7 +882,7 @@ export default function DashboardPage() {
     () => (analytics ? buildMachineViews(analytics) : []),
     [analytics],
   );
-  const operationalAlerts = useMemo(
+  const activeOperationalAlerts = useMemo(
     () =>
       canonical
         ? buildOperationalAlerts(canonical, alertConfig, {
@@ -851,6 +909,28 @@ export default function DashboardPage() {
       syncState.status,
     ],
   );
+  const operationalAlerts = useMemo(
+    () =>
+      reconcileOperationalAlertLifecycle(
+        activeOperationalAlerts,
+        alertLifecycle,
+      ),
+    [activeOperationalAlerts, alertLifecycle],
+  );
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setAlertLifecycle((current) => {
+        const next = reconcileOperationalAlertLifecycle(
+          activeOperationalAlerts,
+          current,
+        );
+        return JSON.stringify(next) === JSON.stringify(current)
+          ? current
+          : next;
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeOperationalAlerts]);
   const scopedOperationalAlerts = useMemo(
     () =>
       operationalAlerts.filter((alert) => {
@@ -971,6 +1051,7 @@ export default function DashboardPage() {
       pollIntervalMs: SYNC_POLL_INTERVAL_MS,
       staleAfterMs: SYNC_STALE_AFTER_MS,
       initialLogs: readStoredSyncLogs(),
+      initialHistory: readStoredSyncHistory(),
       onData(data, changes) {
         setCanonical(data);
         if (hasPublishedDataset) {
@@ -1031,6 +1112,15 @@ export default function DashboardPage() {
   function handleUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
+    try {
+      validateMmsWorkbookUpload(file.name, file.size);
+    } catch (error) {
+      setLoadError(
+        error instanceof Error ? error.message : "Invalid MMS workbook.",
+      );
+      event.target.value = "";
+      return;
+    }
     startSynchronization(
       new ExcelMmsDataSource(file.name, () => file.arrayBuffer()),
       "uploaded-snapshot",
@@ -1083,8 +1173,19 @@ export default function DashboardPage() {
     }));
   }
 
-  function exportFilteredReport() {
+  function updateAlertSeverity(
+    type: OperationalAlertType,
+    severity: OperationalAlertSeverity,
+  ): void {
+    setAlertConfig((current) => ({
+      ...current,
+      severities: { ...current.severities, [type]: severity },
+    }));
+  }
+
+  async function exportFilteredReport() {
     if (!canonical || !analytics) return;
+    const { downloadFilteredReport } = await import("./report-export");
     downloadFilteredReport({
       analytics,
       company: canonical.source.company,
@@ -1093,6 +1194,7 @@ export default function DashboardPage() {
       selectedMachine,
       machines,
       alerts: scopedOperationalAlerts,
+      managementSummary: resolvedManagementSummary,
       generatedAt: new Date().toISOString(),
       lastSuccessfulSyncAt: syncState.lastSuccessfulSyncAt,
       dataSource:
@@ -1130,11 +1232,14 @@ export default function DashboardPage() {
     (machine) => machine.status === "Fault" || machine.status === "Warning",
   ).length;
   const unacknowledgedAlertCount = scopedOperationalAlerts.filter(
-    (alert) => alert.acknowledgementState === "unacknowledged",
+    (alert) =>
+      alert.status === "active" &&
+      alert.acknowledgementState === "unacknowledged",
   ).length;
   const criticalAlertCount = scopedOperationalAlerts.filter(
     (alert) =>
       alert.severity === "critical" &&
+      alert.status === "active" &&
       alert.acknowledgementState === "unacknowledged",
   ).length;
   const activeLabel =
@@ -1454,8 +1559,15 @@ export default function DashboardPage() {
   );
 
   const renderAlerts = () => {
-    const acknowledgedCount = scopedOperationalAlerts.length -
-      unacknowledgedAlertCount;
+    const activeAlerts = scopedOperationalAlerts.filter(
+      (alert) => alert.status === "active",
+    );
+    const acknowledgedCount = activeAlerts.filter(
+      (alert) => alert.acknowledgementState === "acknowledged",
+    ).length;
+    const resolvedCount = scopedOperationalAlerts.filter(
+      (alert) => alert.status === "resolved",
+    ).length;
     const displayedAlerts = visibleOperationalAlerts.slice(0, 200);
     return (
       <div className="view-stack tab-enter">
@@ -1506,9 +1618,9 @@ export default function DashboardPage() {
             tone="emerald"
           />
           <KpiCard
-            label="Total active"
-            value={integerFormat.format(scopedOperationalAlerts.length)}
-            detail="Alerts in the current global scope"
+            label="Resolved"
+            value={integerFormat.format(resolvedCount)}
+            detail="Conditions cleared since detection"
             tone="indigo"
           />
         </section>
@@ -1586,7 +1698,7 @@ export default function DashboardPage() {
                       alert.acknowledgementState === "acknowledged"
                         ? "alert-acknowledged"
                         : ""
-                    }`}
+                    } ${alert.status === "resolved" ? "alert-resolved" : ""}`}
                   >
                     <div className="alert-record-head">
                       <div>
@@ -1711,14 +1823,29 @@ export default function DashboardPage() {
                     [OperationalAlertType, string]
                   >
                 ).map(([type, label]) => (
-                  <label key={type}>
-                    <input
-                      type="checkbox"
-                      checked={alertConfig.enabled[type]}
-                      onChange={() => toggleAlertType(type)}
-                    />
-                    <span>{label}</span>
-                  </label>
+                  <div key={type} className="alert-rule-control">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={alertConfig.enabled[type]}
+                        onChange={() => toggleAlertType(type)}
+                      />
+                      <span>{label}</span>
+                    </label>
+                    <select
+                      aria-label={`${label} severity`}
+                      value={alertConfig.severities[type]}
+                      onChange={(event) =>
+                        updateAlertSeverity(
+                          type,
+                          event.target.value as OperationalAlertSeverity,
+                        )
+                      }
+                    >
+                      <option value="warning">Warning</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </div>
                 ))}
               </div>
             </details>
@@ -2710,6 +2837,29 @@ export default function DashboardPage() {
                   >
                     <span>{readableTimestamp(entry.timestamp)}</span>
                     <p>{entry.message}</p>
+                  </article>
+                ))}
+            </div>
+          </details>
+          <details className="sync-log-panel">
+            <summary>Import history ({syncState.history.length})</summary>
+            <div>
+              {syncState.history
+                .slice()
+                .reverse()
+                .slice(0, 12)
+                .map((entry) => (
+                  <article
+                    key={entry.id}
+                    className={`sync-log-${
+                      entry.status === "failed" ? "error" : "success"
+                    }`}
+                  >
+                    <span>{readableTimestamp(entry.completedAt)}</span>
+                    <p>
+                      {entry.status} · {entry.productionRecordCount} production
+                      · {entry.downtimeRecordCount} downtime
+                    </p>
                   </article>
                 ))}
             </div>
