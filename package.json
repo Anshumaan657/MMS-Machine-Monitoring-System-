@@ -17,7 +17,8 @@
     "diagnose:cycle-time": "node --experimental-strip-types scripts/analyze-achieved-cycle-time.mjs",
     "diagnose:calculations": "node --experimental-strip-types scripts/analyze-all-calculations.mjs",
     "verify:sample:strict": "MMS_VERIFICATION_ENFORCE_TARGET=true node --experimental-strip-types scripts/verify-sample-workbook.mjs",
-    "smoke:deployment": "node scripts/deployment-smoke.mjs"
+    "smoke:deployment": "node scripts/deployment-smoke.mjs",
+    "verify:phase27:report": "node scripts/render-phase27-print-report.mjs"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
