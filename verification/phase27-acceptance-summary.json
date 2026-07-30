@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-07-30T04:09:14Z",
+  "phase": 27,
+  "status": "ready_for_3d_verification",
+  "calculationPolicy": {
+    "id": "mms-direct-quantity-v2",
+    "version": "2.0.0",
+    "status": "confirmed"
+  },
+  "automatedTests": {
+    "status": "pass",
+    "total": 120,
+    "failed": 0
+  },
+  "responsiveChecks": {
+    "laptop": {
+      "viewport": "1024x768",
+      "horizontalOverflow": false,
+      "unlabeledInputs": 0,
+      "unnamedButtons": 0
+    },
+    "widescreen": {
+      "viewport": "1920x1080",
+      "horizontalOverflow": false,
+      "unlabeledInputs": 0,
+      "unnamedButtons": 0
+    }
+  },
+  "printReport": {
+    "status": "pass_with_known_limitation",
+    "pages": 6,
+    "paper": "A4",
+    "portraitPages": [1, 2, 4, 6],
+    "landscapePages": [3, 5],
+    "clippedContentDetected": false
+  },
+  "formalAcceptance": {
+    "status": "pending_3d_side_by_side_values",
+    "representativeCaseCount": 8
+  }
+}

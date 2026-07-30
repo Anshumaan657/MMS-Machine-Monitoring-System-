@@ -1,0 +1,181 @@
+{
+  "schemaVersion": "1.0",
+  "purpose": "Representative cases for final side-by-side verification between MMS Intelligence and 3D's MMS",
+  "instructions": [
+    "Select one real source record for every case.",
+    "Enter the 3D MMS values without changing the workbook or dashboard data.",
+    "Apply identical date, shift, machine, product, operator and downtime-reason filters in both systems.",
+    "Record screenshots or report references privately; do not commit client data.",
+    "A case passes when every applicable value agrees within the approved tolerance."
+  ],
+  "defaultTolerance": {
+    "quantity": 0.01,
+    "seconds": 1,
+    "percentagePoints": 0.1,
+    "currency": 0.01
+  },
+  "cases": [
+    {
+      "id": "3D-UAT-01",
+      "scenario": "Completed single-product shift with complete quality data",
+      "sourceReference": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": "",
+        "sourceRow": null
+      },
+      "verify": [
+        "Reported production quantity",
+        "Shift target",
+        "Operative-time target",
+        "Production loss",
+        "Availability",
+        "Performance",
+        "Quality",
+        "Final OEE"
+      ],
+      "threeDValues": {},
+      "mmsIntelligenceValues": {},
+      "status": "pending"
+    },
+    {
+      "id": "3D-UAT-02",
+      "scenario": "Completed product-change interval",
+      "sourceReference": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": "",
+        "sourceRow": null
+      },
+      "verify": [
+        "Allocated planned time",
+        "Shift target",
+        "Production quantity",
+        "Production loss"
+      ],
+      "threeDValues": {},
+      "mmsIntelligenceValues": {},
+      "status": "pending"
+    },
+    {
+      "id": "3D-UAT-03",
+      "scenario": "Active unfinished product interval",
+      "sourceReference": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": "",
+        "sourceRow": null
+      },
+      "verify": [
+        "Full planned target treatment",
+        "Production quantity",
+        "Production loss",
+        "Data-freshness status"
+      ],
+      "threeDValues": {},
+      "mmsIntelligenceValues": {},
+      "status": "pending"
+    },
+    {
+      "id": "3D-UAT-04",
+      "scenario": "Reported quantity differs from Stroke multiplied by M. Factor",
+      "sourceReference": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": "",
+        "sourceRow": null
+      },
+      "verify": [
+        "Reported Qty remains authoritative",
+        "Quantity-mismatch finding is generated",
+        "M. Factor does not replace production quantity"
+      ],
+      "threeDValues": {},
+      "mmsIntelligenceValues": {},
+      "status": "pending"
+    },
+    {
+      "id": "3D-UAT-05",
+      "scenario": "Production exceeds target",
+      "sourceReference": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": "",
+        "sourceRow": null
+      },
+      "verify": [
+        "Production loss is zero",
+        "No negative production loss is displayed",
+        "Target attainment remains visible"
+      ],
+      "threeDValues": {},
+      "mmsIntelligenceValues": {},
+      "status": "pending"
+    },
+    {
+      "id": "3D-UAT-06",
+      "scenario": "Missing or unreliable rejection/rework entry",
+      "sourceReference": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "product": "",
+        "sourceRow": null
+      },
+      "verify": [
+        "Quality readiness warning",
+        "Final OEE remains blocked",
+        "Missing-quality finding identifies the source row"
+      ],
+      "threeDValues": {},
+      "mmsIntelligenceValues": {},
+      "status": "pending"
+    },
+    {
+      "id": "3D-UAT-07",
+      "scenario": "Reported continuous downtime event with machine cost",
+      "sourceReference": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "downtimeReason": "",
+        "sourceRow": null
+      },
+      "verify": [
+        "Event duration",
+        "Downtime classification",
+        "Machine-hour cost",
+        "Financial loss",
+        "Reason Pareto placement"
+      ],
+      "threeDValues": {},
+      "mmsIntelligenceValues": {},
+      "status": "pending"
+    },
+    {
+      "id": "3D-UAT-08",
+      "scenario": "System Off or UNREPORTED downtime condition",
+      "sourceReference": {
+        "date": "",
+        "machine": "",
+        "shift": "",
+        "downtimeReason": "",
+        "sourceRow": null
+      },
+      "verify": [
+        "System Off remains separate from downtime",
+        "Missing-reason warning",
+        "Operational alert",
+        "Source-row evidence"
+      ],
+      "threeDValues": {},
+      "mmsIntelligenceValues": {},
+      "status": "pending"
+    }
+  ]
+}
