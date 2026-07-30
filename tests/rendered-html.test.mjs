@@ -25,14 +25,14 @@ async function render() {
   );
 }
 
-test("server-renders the MMS application shell", async () => {
+test("server-renders the 3D Intelligence application shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /MMS Intelligence™ \| Industrial Analytics Command Center/i);
-  assert.match(html, /Upload a verified MMS workbook to begin/i);
+  assert.match(html, /3D INTELLIGENCE™ \| Industrial Analytics Command Center/i);
+  assert.match(html, /Connect your production workbook/i);
   assert.match(html, /Connect workbook/i);
   assert.doesNotMatch(html, /codex-preview/);
   assert.doesNotMatch(html, /Your site is taking shape/);
@@ -99,11 +99,24 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(page, /Evidence-backed management summary/);
   assert.match(page, /Generate AI narrative/);
   assert.match(page, /Quality and Final OEE use the 3D-confirmed calculation/);
+  assert.match(page, /3D INTELLIGENCE™/);
+  assert.match(page, /THEME_STORAGE_KEY/);
+  assert.match(page, /sidebarExpanded/);
+  assert.match(page, /onMouseEnter=\{\(\) => setSidebarExpanded\(true\)\}/);
+  assert.match(page, /Advanced filters/);
+  assert.match(page, /chart-tooltip/);
+  assert.match(page, /maxDailyChartValue/);
+  assert.match(page, /PersonalizableTile/);
+  assert.match(page, /Customize layout/);
+  assert.match(page, /OVERVIEW_LAYOUT_STORAGE_KEY/);
+  assert.match(page, /machine-drawer-layer/);
+  assert.doesNotMatch(page, /MMS Intelligence/i);
+  assert.doesNotMatch(page, /Calculation policy \{analytics/);
   assert.doesNotMatch(page, /temperature:\s*number/i);
   assert.doesNotMatch(page, /vibration:\s*number/i);
   assert.doesNotMatch(page, /rpm:\s*number/i);
   assert.doesNotMatch(page, /pressure:\s*number/i);
-  assert.match(layout, /MMS Intelligence/);
+  assert.match(layout, /3D INTELLIGENCE/);
   assert.match(packageJson, /"xlsx"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 
