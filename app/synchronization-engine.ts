@@ -7,6 +7,7 @@ import {
   MmsDataSourceError,
   type MmsDataSource,
 } from "./mms-data-source.ts";
+import { safeOperationalError } from "./security.ts";
 
 export type MmsSyncStatus =
   | "idle"
@@ -42,6 +43,17 @@ export type MmsSyncChanges = {
   changed: boolean;
 };
 
+export type MmsImportHistoryEntry = {
+  id: string;
+  sourceName: string;
+  completedAt: string;
+  status: "changed" | "unchanged" | "failed";
+  productionRecordCount: number;
+  downtimeRecordCount: number;
+  changes: MmsSyncChanges;
+  error: string | null;
+};
+
 export type MmsSyncState = {
   status: MmsSyncStatus;
   sourceName: string | null;
@@ -54,6 +66,7 @@ export type MmsSyncState = {
   lastChanges: MmsSyncChanges;
   error: string | null;
   logs: MmsSyncLogEntry[];
+  history: MmsImportHistoryEntry[];
 };
 
 export type MmsSynchronizationOptions = {
@@ -63,6 +76,9 @@ export type MmsSynchronizationOptions = {
   logRetentionMs?: number;
   maxLogEntries?: number;
   initialLogs?: readonly MmsSyncLogEntry[];
+  initialHistory?: readonly MmsImportHistoryEntry[];
+  historyRetentionMs?: number;
+  maxHistoryEntries?: number;
   now?: () => Date;
   wait?: (milliseconds: number) => Promise<void>;
   onData?: (
@@ -86,6 +102,8 @@ const DEFAULT_STALE_AFTER_MS = 5 * 60_000;
 const DEFAULT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000] as const;
 const DEFAULT_LOG_RETENTION_MS = 24 * 60 * 60_000;
 const DEFAULT_MAX_LOG_ENTRIES = 250;
+const DEFAULT_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60_000;
+const DEFAULT_MAX_HISTORY_ENTRIES = 100;
 
 const EMPTY_CHANGES: MmsSyncChanges = {
   added: 0,
@@ -106,6 +124,7 @@ const EMPTY_CURSOR: MmsSyncCursor = {
 
 export function createInitialMmsSyncState(
   initialLogs: readonly MmsSyncLogEntry[] = [],
+  initialHistory: readonly MmsImportHistoryEntry[] = [],
 ): MmsSyncState {
   return {
     status: "idle",
@@ -119,6 +138,7 @@ export function createInitialMmsSyncState(
     lastChanges: { ...EMPTY_CHANGES },
     error: null,
     logs: [...initialLogs],
+    history: [...initialHistory],
   };
 }
 
@@ -248,11 +268,20 @@ function publicState(state: MmsSyncState): MmsSyncState {
     cursor: { ...state.cursor },
     lastChanges: { ...state.lastChanges },
     logs: [...state.logs],
+    history: state.history.map((entry) => ({
+      ...entry,
+      changes: { ...entry.changes },
+    })),
   };
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof MmsDataSourceError) return error.message;
+  if (error instanceof MmsDataSourceError) {
+    return safeOperationalError(
+      error,
+      "Synchronization failed while reading the MMS source.",
+    );
+  }
   return "Synchronization failed while reading the MMS source.";
 }
 
@@ -270,6 +299,8 @@ export class MmsSynchronizationEngine {
   readonly #retryDelaysMs: readonly number[];
   readonly #logRetentionMs: number;
   readonly #maxLogEntries: number;
+  readonly #historyRetentionMs: number;
+  readonly #maxHistoryEntries: number;
   readonly #now: () => Date;
   readonly #wait: (milliseconds: number) => Promise<void>;
   readonly #onData?: MmsSynchronizationOptions["onData"];
@@ -300,6 +331,10 @@ export class MmsSynchronizationEngine {
       options.logRetentionMs ?? DEFAULT_LOG_RETENTION_MS;
     this.#maxLogEntries =
       options.maxLogEntries ?? DEFAULT_MAX_LOG_ENTRIES;
+    this.#historyRetentionMs =
+      options.historyRetentionMs ?? DEFAULT_HISTORY_RETENTION_MS;
+    this.#maxHistoryEntries =
+      options.maxHistoryEntries ?? DEFAULT_MAX_HISTORY_ENTRIES;
     this.#now = options.now ?? (() => new Date());
     this.#wait =
       options.wait ??
@@ -308,10 +343,14 @@ export class MmsSynchronizationEngine {
     this.#onData = options.onData;
     this.#onState = options.onState;
     this.#state = {
-      ...createInitialMmsSyncState(options.initialLogs),
+      ...createInitialMmsSyncState(
+        options.initialLogs,
+        options.initialHistory,
+      ),
       sourceName: source.name,
     };
     this.#pruneLogs();
+    this.#pruneHistory();
   }
 
   get state(): MmsSyncState {
@@ -423,6 +462,16 @@ export class MmsSynchronizationEngine {
         consecutiveFailures: this.#state.consecutiveFailures + 1,
         error: synchronizationError,
       };
+      this.#addHistory({
+        id: `import-${failedAt.getTime()}-failed`,
+        sourceName: this.#source.name,
+        completedAt: failedAt.toISOString(),
+        status: "failed",
+        productionRecordCount: this.#state.cursor.productionRecordCount,
+        downtimeRecordCount: this.#state.cursor.downtimeRecordCount,
+        changes: { ...EMPTY_CHANGES },
+        error: synchronizationError,
+      });
       this.#addLog("error", synchronizationError);
       this.#emit();
       return;
@@ -450,6 +499,16 @@ export class MmsSynchronizationEngine {
       lastChanges: reconciliation.changes,
       error: null,
     };
+    this.#addHistory({
+      id: `import-${completedAt.getTime()}-${nextCursor.snapshotSequence}`,
+      sourceName: this.#source.name,
+      completedAt: completedAt.toISOString(),
+      status: reconciliation.changes.changed ? "changed" : "unchanged",
+      productionRecordCount: data.productionIntervals.length,
+      downtimeRecordCount: data.downtimeEvents.length,
+      changes: { ...reconciliation.changes },
+      error: null,
+    });
     if (reconciliation.changes.changed) {
       this.#addLog(
         "success",
@@ -493,6 +552,27 @@ export class MmsSynchronizationEngine {
       logs: this.#state.logs
         .filter((entry) => new Date(entry.timestamp).getTime() >= oldestAllowed)
         .slice(-this.#maxLogEntries),
+    };
+  }
+
+  #addHistory(entry: MmsImportHistoryEntry): void {
+    this.#state = {
+      ...this.#state,
+      history: [...this.#state.history, entry],
+    };
+    this.#pruneHistory();
+  }
+
+  #pruneHistory(): void {
+    const oldestAllowed = this.#now().getTime() - this.#historyRetentionMs;
+    this.#state = {
+      ...this.#state,
+      history: this.#state.history
+        .filter(
+          (entry) =>
+            new Date(entry.completedAt).getTime() >= oldestAllowed,
+        )
+        .slice(-this.#maxHistoryEntries),
     };
   }
 

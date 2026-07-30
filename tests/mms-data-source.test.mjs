@@ -6,6 +6,7 @@ import {
   ExcelMmsDataSource,
   MmsDataSourceError,
   loadMmsDataWithFallback,
+  validateMmsWorkbookUpload,
 } from "../app/mms-data-source.ts";
 import {
   describeReadonlyMmsDatabaseEnvironment,
@@ -209,6 +210,24 @@ function comparable(data) {
     },
   };
 }
+
+test("validates workbook type, size, and empty uploads before parsing", () => {
+  assert.doesNotThrow(() =>
+    validateMmsWorkbookUpload("sample.xlsx", 1_024),
+  );
+  assert.throws(
+    () => validateMmsWorkbookUpload("sample.csv", 1_024),
+    /Only .xls and .xlsx/,
+  );
+  assert.throws(
+    () => validateMmsWorkbookUpload("sample.xls", 0),
+    /empty/,
+  );
+  assert.throws(
+    () => validateMmsWorkbookUpload("sample.xlsx", 2_000, 1_000),
+    /safety limit/,
+  );
+});
 
 test("database and Excel sources produce equivalent canonical analytics", async () => {
   const requests = [];
