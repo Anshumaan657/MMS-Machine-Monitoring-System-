@@ -236,6 +236,9 @@ test("builds bounded verified evidence without raw workbook records", () => {
     "2026-07-26T00:00:00.000Z",
   );
   const serialized = JSON.stringify(evidence);
+  assert.equal(evidence.schemaVersion, "1.1");
+  assert.equal(evidence.calculationPolicy.version, "2.0.0");
+  assert.equal(evidence.calculationPolicy.status, "confirmed");
   assert.equal(evidence.policy.calculationsAllowed, false);
   assert.equal(evidence.policy.rawRecordsIncluded, false);
   assert.deepEqual(evidence.pendingClaims, []);
@@ -332,6 +335,7 @@ test("AI request uses strict structured output and verified evidence only", asyn
   assert.equal(summary.model, "test-model");
   assert.equal(capturedBody.text.format.type, "json_schema");
   assert.equal(capturedBody.text.format.strict, true);
+  assert.equal(capturedBody.store, false);
   assert.equal(JSON.parse(capturedBody.input).policy.rawRecordsIncluded, false);
   assert.doesNotMatch(capturedBody.input, /secretRawField/);
   assert.match(capturedBody.instructions, /Never calculate/);
@@ -388,5 +392,39 @@ test("uses deterministic fallback when the AI is unavailable", async () => {
   const evidence = buildVerifiedManagementEvidence(analyticsFixture());
   const result = await generateManagementSummaryWithFallback(evidence);
   assert.equal(result.summary.source, "deterministic");
-  assert.match(result.fallbackReason ?? "", /OPENAI_API_KEY/);
+  assert.match(result.fallbackReason ?? "", /deterministic verified summary/);
+});
+
+test("rejects unsupported Quality or OEE narrative claims", () => {
+  const evidence = buildVerifiedManagementEvidence(analyticsFixture());
+  const pendingEvidence = {
+    ...evidence,
+    facts: evidence.facts.map((fact) =>
+      fact.id === "oee.final"
+        ? { ...fact, reliability: "pending" }
+        : fact,
+    ),
+  };
+  assert.throws(
+    () =>
+      validateAiManagementSummary(
+        {
+          title: "Verified management brief",
+          executiveSummary: [
+            {
+              text: "OEE is ready for official reporting.",
+              evidenceIds: ["oee.final"],
+            },
+          ],
+          productionLosses: [],
+          comparisons: [],
+          bottlenecks: [],
+          dataCaveats: [],
+          recommendations: [],
+        },
+        pendingEvidence,
+        "test-model",
+      ),
+    /pending evidence|unsupported Quality or OEE/,
+  );
 });
