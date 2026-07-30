@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
 
-const title = "MMS Intelligence™ | Industrial Analytics Command Center";
+const title = "3D INTELLIGENCE™ | Industrial Analytics Command Center";
 const description =
   "A dark-mode industrial analytics command center for machine performance, downtime, data quality, and daily operational reporting.";
 
@@ -20,7 +20,7 @@ export async function generateMetadata(): Promise<Metadata> {
       title,
       description,
       type: "website",
-      images: [{ url: socialImage, width: 1200, height: 630, alt: "MMS Intelligence dashboard" }],
+      images: [{ url: socialImage, width: 1200, height: 630, alt: "3D Intelligence dashboard" }],
     },
     twitter: {
       card: "summary_large_image",

@@ -83,7 +83,7 @@ export function PrintableMmsReport({
 
       <header className="print-cover">
         <div>
-          <span>MMS Intelligence™</span>
+          <span>3D INTELLIGENCE™</span>
           <h1>Operational Analytics Report</h1>
           <p>{metadata.company}</p>
         </div>
@@ -286,7 +286,7 @@ export function PrintableMmsReport({
       ) : null}
 
       <footer className="print-report-footer">
-        <span>MMS Intelligence™ · {metadata.company}</span>
+        <span>3D INTELLIGENCE™ · {metadata.company}</span>
         <span>Confidential operational report</span>
         <span className="print-page-number" />
       </footer>

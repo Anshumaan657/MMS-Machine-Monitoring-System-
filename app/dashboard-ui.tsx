@@ -180,15 +180,22 @@ export function SidePanel({
   label,
   title,
   onClose,
+  modal = false,
   children,
 }: {
   label: string;
   title: string;
   onClose?: () => void;
+  modal?: boolean;
   children: ReactNode;
 }) {
   return (
-    <aside className="side-panel glass-panel" aria-label={label}>
+    <aside
+      className="side-panel glass-panel"
+      aria-label={label}
+      aria-modal={modal || undefined}
+      role={modal ? "dialog" : undefined}
+    >
       <header>
         <div>
           <span>{label}</span>

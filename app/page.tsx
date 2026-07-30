@@ -2,6 +2,7 @@
 
 import {
   ChangeEvent,
+  DragEvent,
   ReactNode,
   useEffect,
   useMemo,
@@ -84,6 +85,15 @@ export type DashboardTab =
   | "daily-report";
 
 export type MachineStatus = "Running" | "Idle" | "Warning" | "Fault";
+type ThemeMode = "dark" | "light";
+type OverviewTileId =
+  | "kpis"
+  | "freshness"
+  | "production"
+  | "actions"
+  | "fleet"
+  | "findings";
+type OverviewTileSize = "compact" | "wide" | "full";
 
 type NavigationItem = {
   id: DashboardTab;
@@ -156,6 +166,9 @@ const ALERT_ACKNOWLEDGEMENT_STORAGE_KEY =
   "mms-intelligence-alert-acknowledgements-v1";
 const ALERT_LIFECYCLE_STORAGE_KEY =
   "mms-intelligence-alert-lifecycle-v1";
+const THEME_STORAGE_KEY = "3d-intelligence-theme-v1";
+const OVERVIEW_LAYOUT_STORAGE_KEY = "3d-intelligence-overview-layout-v1";
+const OVERVIEW_SIZE_STORAGE_KEY = "3d-intelligence-overview-sizes-v1";
 const SYNC_POLL_INTERVAL_MS = 60_000;
 const SYNC_STALE_AFTER_MS = 5 * 60_000;
 
@@ -218,6 +231,33 @@ const NAVIGATION: NavigationItem[] = [
   { id: "machines", label: "Machines", shortLabel: "MC", icon: "▦" },
   { id: "daily-report", label: "Daily Report", shortLabel: "DR", icon: "▤" },
 ];
+
+const DEFAULT_OVERVIEW_LAYOUT: OverviewTileId[] = [
+  "kpis",
+  "freshness",
+  "production",
+  "actions",
+  "fleet",
+  "findings",
+];
+
+const DEFAULT_OVERVIEW_SIZES: Record<OverviewTileId, OverviewTileSize> = {
+  kpis: "full",
+  freshness: "full",
+  production: "wide",
+  actions: "compact",
+  fleet: "compact",
+  findings: "wide",
+};
+
+const OVERVIEW_TILE_LABELS: Record<OverviewTileId, string> = {
+  kpis: "OEE components",
+  freshness: "Data freshness",
+  production: "Output versus target",
+  actions: "Operational shortcuts",
+  fleet: "Machine status",
+  findings: "Current findings",
+};
 
 function EvidenceChips({
   statement,
@@ -289,6 +329,16 @@ function readableDate(value: string | null): string {
     month: "short",
     year: "numeric",
   }).format(new Date(`${value}T00:00:00`));
+}
+
+function chartDate(value: string): string {
+  const isoDate = value.match(/\d{4}-\d{2}-\d{2}/)?.[0];
+  const parsed = new Date(`${isoDate ?? value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return value.slice(0, 10);
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+  }).format(parsed);
 }
 
 function readableTimestamp(value: string | null): string {
@@ -440,6 +490,57 @@ function readDashboardFilters(): {
   }
 }
 
+function readThemePreference(): ThemeMode {
+  if (typeof window === "undefined") return "dark";
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === "light"
+      ? "light"
+      : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+function readOverviewLayout(): OverviewTileId[] {
+  if (typeof window === "undefined") return DEFAULT_OVERVIEW_LAYOUT;
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(OVERVIEW_LAYOUT_STORAGE_KEY) ?? "[]",
+    );
+    if (
+      Array.isArray(stored) &&
+      stored.length === DEFAULT_OVERVIEW_LAYOUT.length &&
+      DEFAULT_OVERVIEW_LAYOUT.every((id) => stored.includes(id))
+    ) {
+      return stored as OverviewTileId[];
+    }
+  } catch {
+    // Invalid device-local layout falls back to the verified default order.
+  }
+  return DEFAULT_OVERVIEW_LAYOUT;
+}
+
+function readOverviewSizes(): Record<OverviewTileId, OverviewTileSize> {
+  if (typeof window === "undefined") return DEFAULT_OVERVIEW_SIZES;
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(OVERVIEW_SIZE_STORAGE_KEY) ?? "{}",
+    ) as Partial<Record<OverviewTileId, OverviewTileSize>>;
+    return Object.fromEntries(
+      DEFAULT_OVERVIEW_LAYOUT.map((id) => [
+        id,
+        stored[id] === "compact" ||
+        stored[id] === "wide" ||
+        stored[id] === "full"
+          ? stored[id]
+          : DEFAULT_OVERVIEW_SIZES[id],
+      ]),
+    ) as Record<OverviewTileId, OverviewTileSize>;
+  } catch {
+    return DEFAULT_OVERVIEW_SIZES;
+  }
+}
+
 function formatAlertMetric(metric: AlertMetricValue): string {
   if (typeof metric.value === "number") {
     return `${numberFormat.format(metric.value)} ${metric.unit}`;
@@ -502,6 +603,76 @@ function Panel({
   );
 }
 
+function PersonalizableTile({
+  id,
+  size,
+  editing,
+  onDragStart,
+  onDrop,
+  onMove,
+  onResize,
+  children,
+}: {
+  id: OverviewTileId;
+  size: OverviewTileSize;
+  editing: boolean;
+  onDragStart: (event: DragEvent<HTMLDivElement>, id: OverviewTileId) => void;
+  onDrop: (event: DragEvent<HTMLDivElement>, id: OverviewTileId) => void;
+  onMove: (id: OverviewTileId, direction: -1 | 1) => void;
+  onResize: (id: OverviewTileId) => void;
+  children: ReactNode;
+}) {
+  const label = OVERVIEW_TILE_LABELS[id];
+  return (
+    <div
+      className={`overview-tile overview-tile-${size} ${
+        editing ? "overview-tile-editing" : ""
+      }`}
+      draggable={editing}
+      onDragStart={(event) => onDragStart(event, id)}
+      onDragOver={(event) => {
+        if (editing) event.preventDefault();
+      }}
+      onDrop={(event) => onDrop(event, id)}
+      data-overview-tile={id}
+    >
+      {editing ? (
+        <div className="overview-tile-toolbar">
+          <span title={`Drag to move ${label}`} aria-hidden="true">
+            ⠿
+          </span>
+          <strong>{label}</strong>
+          <button
+            type="button"
+            onClick={() => onMove(id, -1)}
+            aria-label={`Move ${label} earlier`}
+            title="Move earlier"
+          >
+            ←
+          </button>
+          <button
+            type="button"
+            onClick={() => onMove(id, 1)}
+            aria-label={`Move ${label} later`}
+            title="Move later"
+          >
+            →
+          </button>
+          <button
+            type="button"
+            onClick={() => onResize(id)}
+            aria-label={`Resize ${label}; current size ${size}`}
+            title={`Resize tile · ${size}`}
+          >
+            {size === "compact" ? "◱" : size === "wide" ? "▭" : "□"}
+          </button>
+        </div>
+      ) : null}
+      <div className="overview-tile-content">{children}</div>
+    </div>
+  );
+}
+
 function StatusChip({ status }: { status: MachineStatus }) {
   return (
     <span className={`status-chip status-${status.toLowerCase()}`}>
@@ -514,28 +685,35 @@ function StatusChip({ status }: { status: MachineStatus }) {
 function EmptyState({
   error,
   processing,
+  onThemeToggle,
   onUpload,
   inputRef,
   onChange,
 }: {
   error: string;
   processing: boolean;
+  onThemeToggle: () => void;
   onUpload: () => void;
   inputRef: React.RefObject<HTMLInputElement | null>;
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
     <main className="empty-state">
-      <div className="empty-orbit" aria-hidden="true">
-        <span>MI</span>
-      </div>
-      <span className="eyebrow">MMS Intelligence™</span>
-      <h1>Upload a verified MMS workbook to begin.</h1>
+      <button
+        type="button"
+        className="theme-toggle empty-theme-toggle"
+        onClick={onThemeToggle}
+        aria-label="Toggle color theme"
+      >
+        <span aria-hidden="true">◐</span>
+        <strong>Theme</strong>
+      </button>
+      <div className="empty-brand">3D INTELLIGENCE</div>
+      <span className="eyebrow">Machine Monitoring System</span>
+      <h1>Connect your production workbook.</h1>
       <p>
-        Production, Availability, Performance, downtime, financial loss,
-        quality records and data-quality findings are recalculated locally from
-        the selected workbook. Supported browsers can continue monitoring that
-        workbook for changes every minute.
+        Turn verified Excel records into production, downtime, quality and
+        operational insights—all processed locally.
       </p>
       {error ? <div className="inline-alert">{error}</div> : null}
       {processing ? <LoadingSkeleton label="Processing MMS workbook" /> : null}
@@ -547,8 +725,7 @@ function EmptyState({
         {processing ? "Processing workbook…" : "Connect workbook"}
       </button>
       <small>
-        Excel analysis happens locally. Manual upload remains available when
-        live file access is unsupported.
+        Supports .xls and .xlsx. Your source workbook is never modified.
       </small>
       <input
         ref={inputRef}
@@ -669,6 +846,16 @@ function buildMachineViews(
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
+  const [theme, setTheme] = useState<ThemeMode>("dark");
+  const [sidebarExpanded, setSidebarExpanded] = useState(false);
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
+  const [overviewEditing, setOverviewEditing] = useState(false);
+  const [overviewLayout, setOverviewLayout] = useState<OverviewTileId[]>(
+    DEFAULT_OVERVIEW_LAYOUT,
+  );
+  const [overviewSizes, setOverviewSizes] = useState<
+    Record<OverviewTileId, OverviewTileSize>
+  >(DEFAULT_OVERVIEW_SIZES);
   const [initialFilters] = useState(readDashboardFilters);
   const [canonical, setCanonical] = useState<CanonicalMmsData | null>(null);
   const [processing, setProcessing] = useState(false);
@@ -727,6 +914,52 @@ export default function DashboardPage() {
   const fileInput = useRef<HTMLInputElement>(null);
   const syncEngine = useRef<MmsSynchronizationEngine | null>(null);
   const noticeSequence = useRef(0);
+  const preferencesReady = useRef(false);
+
+  useEffect(() => {
+    const restorePreferences = window.setTimeout(() => {
+      setTheme(readThemePreference());
+      setOverviewLayout(readOverviewLayout());
+      setOverviewSizes(readOverviewSizes());
+      preferencesReady.current = true;
+    }, 0);
+    return () => window.clearTimeout(restorePreferences);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    if (!preferencesReady.current) return;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Theme still works for the current session.
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    if (!preferencesReady.current) return;
+    try {
+      window.localStorage.setItem(
+        OVERVIEW_LAYOUT_STORAGE_KEY,
+        JSON.stringify(overviewLayout),
+      );
+      window.localStorage.setItem(
+        OVERVIEW_SIZE_STORAGE_KEY,
+        JSON.stringify(overviewSizes),
+      );
+    } catch {
+      // Layout personalization remains active for the current session.
+    }
+  }, [overviewLayout, overviewSizes]);
+
+  useEffect(() => {
+    if (!selectedMachineName) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedMachineName("");
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [selectedMachineName]);
 
   useEffect(
     () => () => {
@@ -979,9 +1212,7 @@ export default function DashboardPage() {
     ],
   );
   const selectedMachineView =
-    machines.find((machine) => machine.name === selectedMachineName) ??
-    machines[0] ??
-    null;
+    machines.find((machine) => machine.name === selectedMachineName) ?? null;
   const visibleMachines = useMemo(() => {
     const search = machineSearch.trim().toLowerCase();
     return machines.filter(
@@ -1210,11 +1441,65 @@ export default function DashboardPage() {
     window.print();
   }
 
+  function moveOverviewTile(id: OverviewTileId, direction: -1 | 1): void {
+    setOverviewLayout((current) => {
+      const sourceIndex = current.indexOf(id);
+      const targetIndex = sourceIndex + direction;
+      if (sourceIndex < 0 || targetIndex < 0 || targetIndex >= current.length) {
+        return current;
+      }
+      const next = [...current];
+      [next[sourceIndex], next[targetIndex]] = [
+        next[targetIndex],
+        next[sourceIndex],
+      ];
+      return next;
+    });
+  }
+
+  function dropOverviewTile(
+    event: DragEvent<HTMLDivElement>,
+    targetId: OverviewTileId,
+  ): void {
+    event.preventDefault();
+    const sourceId = event.dataTransfer.getData(
+      "text/plain",
+    ) as OverviewTileId;
+    if (!DEFAULT_OVERVIEW_LAYOUT.includes(sourceId) || sourceId === targetId) {
+      return;
+    }
+    setOverviewLayout((current) => {
+      const next = current.filter((id) => id !== sourceId);
+      const targetIndex = next.indexOf(targetId);
+      next.splice(targetIndex, 0, sourceId);
+      return next;
+    });
+  }
+
+  function cycleOverviewTileSize(id: OverviewTileId): void {
+    setOverviewSizes((current) => {
+      const nextSize: Record<OverviewTileSize, OverviewTileSize> = {
+        compact: "wide",
+        wide: "full",
+        full: "compact",
+      };
+      return { ...current, [id]: nextSize[current[id]] };
+    });
+  }
+
+  function resetOverviewLayout(): void {
+    setOverviewLayout(DEFAULT_OVERVIEW_LAYOUT);
+    setOverviewSizes(DEFAULT_OVERVIEW_SIZES);
+  }
+
   if (!canonical || !analytics || !filterOptions) {
     return (
       <EmptyState
         error={loadError}
         processing={processing}
+        onThemeToggle={() =>
+          setTheme((current) => (current === "dark" ? "light" : "dark"))
+        }
         onUpload={() => void connectWorkbook()}
         inputRef={fileInput}
         onChange={handleUpload}
@@ -1224,8 +1509,11 @@ export default function DashboardPage() {
 
   const periodOee = analytics.availabilityPerformance.period;
   const dailyProduction = analytics.production.daily.slice(-14);
-  const maxDailyTarget = Math.max(
-    ...dailyProduction.map((day) => day.totals.shiftTarget),
+  const maxDailyChartValue = Math.max(
+    ...dailyProduction.flatMap((day) => [
+      day.totals.shiftTarget,
+      day.totals.producedQuantity,
+    ]),
     1,
   );
   const machineAttentionCount = machines.filter(
@@ -1244,6 +1532,11 @@ export default function DashboardPage() {
   ).length;
   const activeLabel =
     NAVIGATION.find((item) => item.id === activeTab)?.label ?? "Overview";
+  const activeSecondaryFilterCount =
+    selectedProducts.length +
+    selectedOperators.length +
+    selectedDowntimeReasons.length +
+    selectedDataQualityStatuses.length;
   const syncStatusLabel = {
     idle: "Waiting",
     syncing: "Synchronizing",
@@ -1276,284 +1569,404 @@ export default function DashboardPage() {
       ? aiManagementSummary
       : deterministicManagementSummary;
 
-  const renderOverview = () => (
-    <div className="view-stack tab-enter">
-      <section className="kpi-grid">
-        <KpiCard
-          label="Availability"
-          value={percent(periodOee.availability)}
-          detail="Operative time ÷ planned production time"
-          tone="emerald"
-        >
-          <InfoTooltip label="availability-formula-help">
-            Planned production time equals Shift Time minus Allowed Time.
-          </InfoTooltip>
-        </KpiCard>
-        <KpiCard
-          label="Performance"
-          value={percent(periodOee.performance)}
-          detail="Produced quantity ÷ operative-time target"
-          tone="indigo"
-        />
-        <KpiCard
-          label="Quality"
-          value={percent(analytics.oee.period.quality)}
-          detail="(Reported − rejected − rework) ÷ reported"
-          tone="amber"
-        />
-        <KpiCard
-          label="Final OEE"
-          value={percent(analytics.oee.period.finalOee)}
-          detail="Availability × Performance × Quality"
-          tone="rose"
-        >
-          <MetricStatus
-            label={analytics.oee.period.finalOeeReadiness}
-            tone={
-              analytics.oee.period.finalOeeReadiness === "ready"
-                ? "emerald"
-                : "amber"
-            }
-          />
-        </KpiCard>
-      </section>
-
-      <section className="freshness-banner" aria-label="Data freshness">
-        <div>
-          <span>Latest source record</span>
-          <strong>{readableTimestamp(latestRecordAt)}</strong>
-        </div>
-        <div>
-          <span>Last successful synchronization</span>
-          <strong>{readableTimestamp(syncState.lastSuccessfulSyncAt)}</strong>
-        </div>
-        <MetricStatus
-          label={syncStatusLabel}
-          tone={
-            syncState.status === "live"
-              ? "emerald"
-              : syncState.status === "error" || syncState.status === "stale"
-                ? "rose"
-                : "amber"
-          }
-        />
-      </section>
-
-      <div className="overview-grid">
-        <Panel
-          eyebrow="Filtered production"
-          title="Output versus target"
-          className="chart-panel"
-          action={<span className="panel-badge">{selectedScope}</span>}
-        >
-          {dailyProduction.length ? (
-            <>
-              <div className="chart-legend">
-                <span>
-                  <i className="legend-production" />
-                  Production
-                </span>
-                <span>
-                  <i className="legend-target" />
-                  Target
-                </span>
-              </div>
-              <div className="comparison-chart">
-                {dailyProduction.map((day) => (
-                  <div className="comparison-column" key={day.key}>
-                    <div className="comparison-bars">
-                      <i
-                        className="target-column"
-                        style={{
-                          height: `${Math.max(
-                            4,
-                            (day.totals.shiftTarget / maxDailyTarget) * 100,
-                          )}%`,
-                        }}
-                        title={`Target: ${integerFormat.format(
-                          day.totals.shiftTarget,
-                        )}`}
-                      />
-                      <i
-                        className="production-column"
-                        style={{
-                          height: `${Math.max(
-                            4,
-                            (day.totals.producedQuantity / maxDailyTarget) * 100,
-                          )}%`,
-                        }}
-                        title={`Production: ${integerFormat.format(
+  const renderOverviewTile = (tileId: OverviewTileId): ReactNode => {
+    switch (tileId) {
+      case "kpis":
+        return (
+          <section className="kpi-grid">
+            <KpiCard
+              label="Availability"
+              value={percent(periodOee.availability)}
+              detail="Operative time ÷ planned production time"
+              tone="emerald"
+            >
+              <InfoTooltip label="availability-formula-help">
+                Planned production time equals Shift Time minus Allowed Time.
+              </InfoTooltip>
+            </KpiCard>
+            <KpiCard
+              label="Performance"
+              value={percent(periodOee.performance)}
+              detail="Produced quantity ÷ operative-time target"
+              tone="indigo"
+            />
+            <KpiCard
+              label="Quality"
+              value={percent(analytics.oee.period.quality)}
+              detail="(Reported − rejected − rework) ÷ reported"
+              tone="amber"
+            />
+            <KpiCard
+              label="Final OEE"
+              value={percent(analytics.oee.period.finalOee)}
+              detail="Availability × Performance × Quality"
+              tone="rose"
+            >
+              <MetricStatus
+                label={analytics.oee.period.finalOeeReadiness}
+                tone={
+                  analytics.oee.period.finalOeeReadiness === "ready"
+                    ? "emerald"
+                    : "amber"
+                }
+              />
+            </KpiCard>
+          </section>
+        );
+      case "freshness":
+        return (
+          <section className="freshness-banner" aria-label="Data freshness">
+            <div>
+              <span>Latest source record</span>
+              <strong>{readableTimestamp(latestRecordAt)}</strong>
+            </div>
+            <div>
+              <span>Last successful synchronization</span>
+              <strong>
+                {readableTimestamp(syncState.lastSuccessfulSyncAt)}
+              </strong>
+            </div>
+            <MetricStatus
+              label={syncStatusLabel}
+              tone={
+                syncState.status === "live"
+                  ? "emerald"
+                  : syncState.status === "error" ||
+                      syncState.status === "stale"
+                    ? "rose"
+                    : "amber"
+              }
+            />
+          </section>
+        );
+      case "production":
+        return (
+          <Panel
+            eyebrow="Filtered production"
+            title="Output versus target"
+            className="chart-panel"
+            action={<span className="panel-badge">{selectedScope}</span>}
+          >
+            {dailyProduction.length ? (
+              <>
+                <div className="chart-legend">
+                  <span>
+                    <i className="legend-production" />
+                    Production
+                  </span>
+                  <span>
+                    <i className="legend-target" />
+                    Target
+                  </span>
+                </div>
+                <div className="comparison-chart">
+                  {dailyProduction.map((day) => {
+                    const attainment = numberFormat.format(
+                      day.targetAttainment ?? 0,
+                    );
+                    return (
+                      <div
+                        className="comparison-column"
+                        key={day.key}
+                        tabIndex={0}
+                        role="img"
+                        aria-label={`${chartDate(day.key)}: production ${integerFormat.format(
                           day.totals.producedQuantity,
-                        )}`}
-                      />
-                    </div>
-                    <span>{day.label.slice(5)}</span>
-                    <strong>{numberFormat.format(day.targetAttainment ?? 0)}%</strong>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <p className="panel-note">No production records match this selection.</p>
-          )}
-          <div className="chart-summary">
-            <div>
-              <span>Production</span>
-              <strong>
-                {integerFormat.format(
-                  analytics.production.totals.producedQuantity,
-                )}
-              </strong>
-            </div>
-            <div>
-              <span>Target</span>
-              <strong>
-                {integerFormat.format(analytics.production.totals.shiftTarget)}
-              </strong>
-            </div>
-            <div>
-              <span>Attainment</span>
-              <strong>
-                {numberFormat.format(
-                  analytics.production.targetAttainment ?? 0,
-                )}
-                %
-              </strong>
-            </div>
-          </div>
-        </Panel>
-
-        <Panel eyebrow="Command center" title="Filtered operational snapshot">
-          <div className="quick-actions">
-            <button onClick={() => setActiveTab("alerts")}>
-              <span>!</span>
-              <div>
-                <strong>Operational alerts</strong>
-                <small>
-                  {unacknowledgedAlertCount} unacknowledged ·{" "}
-                  {criticalAlertCount} critical
-                </small>
-              </div>
-              <i>→</i>
-            </button>
-            <button onClick={() => setActiveTab("downtime")}>
-              <span>↯</span>
-              <div>
-                <strong>Downtime</strong>
-                <small>
-                  {numberFormat.format(
-                    hours(analytics.downtime.period.totals.downtimeSeconds),
-                  )}{" "}
-                  h classified
-                </small>
-              </div>
-              <i>→</i>
-            </button>
-            <button onClick={() => setActiveTab("data-quality")}>
-              <span>◇</span>
-              <div>
-                <strong>Data quality</strong>
-                <small>
-                  {integerFormat.format(analytics.dataQuality.warningCount)}{" "}
-                  warnings
-                </small>
-              </div>
-              <i>→</i>
-            </button>
-            <button onClick={() => setActiveTab("machines")}>
-              <span>▦</span>
-              <div>
-                <strong>Machine states</strong>
-                <small>{machineAttentionCount} assets require attention</small>
-              </div>
-              <i>→</i>
-            </button>
-            <button onClick={() => setActiveTab("daily-report")}>
-              <span>⇩</span>
-              <div>
-                <strong>Export report</strong>
-                <small>Seven verified Excel worksheets</small>
-              </div>
-              <i>→</i>
-            </button>
-          </div>
-        </Panel>
-      </div>
-
-      <div className="overview-lower-grid">
-        <Panel eyebrow="Calculated state" title="Machine status by selection">
-          <div className="fleet-summary">
-            {(["Running", "Idle", "Warning", "Fault"] as MachineStatus[]).map(
-              (status) => {
-                const count = machines.filter(
-                  (machine) => machine.status === status,
-                ).length;
-                return (
-                  <button
-                    key={status}
-                    onClick={() => {
-                      setMachineStatus(status);
-                      setActiveTab("machines");
-                    }}
-                  >
-                    <span
-                      className={`fleet-dot status-${status.toLowerCase()}`}
-                    />
-                    <strong>{count}</strong>
-                    <small>{status}</small>
-                  </button>
-                );
-              },
+                        )}, target ${integerFormat.format(
+                          day.totals.shiftTarget,
+                        )}, attainment ${attainment} percent`}
+                      >
+                        <div className="comparison-bars">
+                          <i
+                            className="target-column"
+                            style={{
+                              height: `${Math.min(
+                                100,
+                                Math.max(
+                                  4,
+                                  (day.totals.shiftTarget /
+                                    maxDailyChartValue) *
+                                    100,
+                                ),
+                              )}%`,
+                            }}
+                          />
+                          <i
+                            className="production-column"
+                            style={{
+                              height: `${Math.min(
+                                100,
+                                Math.max(
+                                  4,
+                                  (day.totals.producedQuantity /
+                                    maxDailyChartValue) *
+                                    100,
+                                ),
+                              )}%`,
+                            }}
+                          />
+                        </div>
+                        <span>{chartDate(day.key)}</span>
+                        <div className="chart-tooltip" role="tooltip">
+                          <strong>{chartDate(day.key)}</strong>
+                          <span>
+                            Production{" "}
+                            <b>
+                              {integerFormat.format(
+                                day.totals.producedQuantity,
+                              )}
+                            </b>
+                          </span>
+                          <span>
+                            Target{" "}
+                            <b>
+                              {integerFormat.format(day.totals.shiftTarget)}
+                            </b>
+                          </span>
+                          <span>
+                            Attainment <b>{attainment}%</b>
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <p className="panel-note">
+                No production records match this selection.
+              </p>
             )}
-          </div>
-          <p className="panel-note">
-            States are calculated from filtered production, Availability,
-            Performance, downtime and validation findings. They are not live PLC
-            states.
-          </p>
-        </Panel>
-
-        <Panel eyebrow="Management signal" title="Current findings">
-          <div className="activity-feed">
-            <article>
-              <i className="activity-info" />
+            <div className="chart-summary">
               <div>
-                <span>Selection</span>
-                <strong>
-                  {integerFormat.format(analytics.scope.productionRecordCount)}{" "}
-                  production records
-                </strong>
-                <p>{selectedScope}</p>
-              </div>
-            </article>
-            <article>
-              <i className="activity-critical" />
-              <div>
-                <span>Financial exposure</span>
-                <strong>
-                  {currencyFormat.format(
-                    analytics.downtime.period.totals
-                      .calculatedMachineHourLoss,
-                  )}
-                </strong>
-                <p>Calculated from classified downtime and machine-hour cost.</p>
-              </div>
-            </article>
-            <article>
-              <i className="activity-warning" />
-              <div>
-                <span>Root-cause coverage</span>
+                <span>Production</span>
                 <strong>
                   {integerFormat.format(
-                    analytics.dataQuality.unreportedDowntimeEvents,
-                  )}{" "}
-                  unreported events
+                    analytics.production.totals.producedQuantity,
+                  )}
                 </strong>
-                <p>Reason-wise conclusions remain provisional.</p>
               </div>
-            </article>
-          </div>
-        </Panel>
+              <div>
+                <span>Target</span>
+                <strong>
+                  {integerFormat.format(
+                    analytics.production.totals.shiftTarget,
+                  )}
+                </strong>
+              </div>
+              <div>
+                <span>Attainment</span>
+                <strong>
+                  {numberFormat.format(
+                    analytics.production.targetAttainment ?? 0,
+                  )}
+                  %
+                </strong>
+              </div>
+            </div>
+          </Panel>
+        );
+      case "actions":
+        return (
+          <Panel eyebrow="Command center" title="Operational shortcuts">
+            <div className="quick-actions">
+              <button onClick={() => setActiveTab("alerts")}>
+                <span>!</span>
+                <div>
+                  <strong>Operational alerts</strong>
+                  <small>
+                    {unacknowledgedAlertCount} unacknowledged ·{" "}
+                    {criticalAlertCount} critical
+                  </small>
+                </div>
+                <i>→</i>
+              </button>
+              <button onClick={() => setActiveTab("downtime")}>
+                <span>↯</span>
+                <div>
+                  <strong>Downtime</strong>
+                  <small>
+                    {numberFormat.format(
+                      hours(analytics.downtime.period.totals.downtimeSeconds),
+                    )}{" "}
+                    h classified
+                  </small>
+                </div>
+                <i>→</i>
+              </button>
+              <button onClick={() => setActiveTab("data-quality")}>
+                <span>◇</span>
+                <div>
+                  <strong>Data quality</strong>
+                  <small>
+                    {integerFormat.format(analytics.dataQuality.warningCount)}{" "}
+                    warnings
+                  </small>
+                </div>
+                <i>→</i>
+              </button>
+              <button onClick={() => setActiveTab("machines")}>
+                <span>▦</span>
+                <div>
+                  <strong>Machine states</strong>
+                  <small>{machineAttentionCount} assets require attention</small>
+                </div>
+                <i>→</i>
+              </button>
+              <button onClick={() => setActiveTab("daily-report")}>
+                <span>⇩</span>
+                <div>
+                  <strong>Export report</strong>
+                  <small>Verified Excel and PDF reports</small>
+                </div>
+                <i>→</i>
+              </button>
+            </div>
+          </Panel>
+        );
+      case "fleet":
+        return (
+          <Panel eyebrow="Calculated state" title="Machine status">
+            <div className="fleet-summary">
+              {(["Running", "Idle", "Warning", "Fault"] as MachineStatus[]).map(
+                (status) => {
+                  const count = machines.filter(
+                    (machine) => machine.status === status,
+                  ).length;
+                  return (
+                    <button
+                      key={status}
+                      onClick={() => {
+                        setMachineStatus(status);
+                        setActiveTab("machines");
+                      }}
+                    >
+                      <span
+                        className={`fleet-dot status-${status.toLowerCase()}`}
+                      />
+                      <strong>{count}</strong>
+                      <small>{status}</small>
+                    </button>
+                  );
+                },
+              )}
+            </div>
+            <p className="panel-note">
+              Calculated from filtered production, downtime and validation
+              findings—not live PLC state.
+            </p>
+          </Panel>
+        );
+      case "findings":
+        return (
+          <Panel eyebrow="Management signal" title="Current findings">
+            <div className="activity-feed">
+              <article>
+                <i className="activity-info" />
+                <div>
+                  <span>Selection</span>
+                  <strong>
+                    {integerFormat.format(
+                      analytics.scope.productionRecordCount,
+                    )}{" "}
+                    production records
+                  </strong>
+                  <p>{selectedScope}</p>
+                </div>
+              </article>
+              <article>
+                <i className="activity-critical" />
+                <div>
+                  <span>Financial exposure</span>
+                  <strong>
+                    {currencyFormat.format(
+                      analytics.downtime.period.totals
+                        .calculatedMachineHourLoss,
+                    )}
+                  </strong>
+                  <p>Classified downtime × machine-hour cost.</p>
+                </div>
+              </article>
+              <article>
+                <i className="activity-warning" />
+                <div>
+                  <span>Root-cause coverage</span>
+                  <strong>
+                    {integerFormat.format(
+                      analytics.dataQuality.unreportedDowntimeEvents,
+                    )}{" "}
+                    unreported events
+                  </strong>
+                  <p>Reason-wise conclusions remain provisional.</p>
+                </div>
+              </article>
+            </div>
+          </Panel>
+        );
+    }
+    return null;
+  };
+
+  const renderOverview = () => (
+    <div className="view-stack tab-enter">
+      <section className="section-intro">
+        <div>
+          <span className="eyebrow">Production command center</span>
+          <h1>Operations overview</h1>
+          <p>Production health, current losses and priority actions.</p>
+        </div>
+        <div className="dashboard-layout-actions">
+          {overviewEditing ? (
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={resetOverviewLayout}
+            >
+              Reset layout
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={`button ${
+              overviewEditing ? "button-primary" : "button-secondary"
+            }`}
+            onClick={() => setOverviewEditing((editing) => !editing)}
+            aria-pressed={overviewEditing}
+          >
+            {overviewEditing ? "Done" : "Customize layout"}
+          </button>
+        </div>
+      </section>
+
+      {overviewEditing ? (
+        <p className="overview-layout-hint" role="status">
+          Drag tiles to reorder. Use arrows for keyboard movement and the size
+          control to cycle compact, wide and full widths.
+        </p>
+      ) : null}
+
+      <div
+        className={`overview-custom-grid ${
+          overviewEditing ? "overview-custom-grid-editing" : ""
+        }`}
+      >
+        {overviewLayout.map((tileId) => (
+          <PersonalizableTile
+            key={tileId}
+            id={tileId}
+            size={overviewSizes[tileId]}
+            editing={overviewEditing}
+            onDragStart={(event, id) => {
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("text/plain", id);
+            }}
+            onDrop={dropOverviewTile}
+            onMove={moveOverviewTile}
+            onResize={cycleOverviewTileSize}
+          >
+            {renderOverviewTile(tileId)}
+          </PersonalizableTile>
+        ))}
       </div>
     </div>
   );
@@ -1575,10 +1988,7 @@ export default function DashboardPage() {
           <div>
             <span className="eyebrow">Operational response</span>
             <h1>Alert center</h1>
-            <p>
-              Record-level operational conditions for the active date, shift
-              and machine selection. Every alert links back to its source row.
-            </p>
+            <p>Live issues, evidence and acknowledgement status.</p>
           </div>
           <button
             className="button button-primary"
@@ -1870,10 +2280,7 @@ export default function DashboardPage() {
           <div>
             <span className="eyebrow">Loss intelligence</span>
             <h1>Downtime analysis</h1>
-            <p>
-              Threshold-classified stoppages, Pareto concentration and
-              calculated machine-hour loss for the active selection.
-            </p>
+            <p>Stoppages, root causes and machine-hour loss.</p>
           </div>
         </section>
 
@@ -2038,10 +2445,7 @@ export default function DashboardPage() {
         <div>
           <span className="eyebrow">Trust layer</span>
           <h1>Data quality command center</h1>
-          <p>
-            Findings are recalculated from only the production and downtime
-            records included by the active filters.
-          </p>
+          <p>Traceable findings for every questionable source record.</p>
         </div>
       </section>
 
@@ -2240,10 +2644,7 @@ export default function DashboardPage() {
         <div>
           <span className="eyebrow">Asset intelligence</span>
           <h1>Machine fleet</h1>
-          <p>
-            Calculated states and verified operational metrics for the active
-            date, shift and machine scope.
-          </p>
+          <p>Calculated state and performance for every machine.</p>
         </div>
         <div className="machine-controls">
           <label>
@@ -2319,10 +2720,19 @@ export default function DashboardPage() {
         </section>
 
         {selectedMachineView ? (
-          <SidePanel
-            label={`${selectedMachineView.id} · Calculated state`}
-            title={selectedMachineView.name}
-          >
+          <div className="machine-drawer-layer">
+            <button
+              type="button"
+              className="machine-drawer-backdrop"
+              aria-label="Close machine details"
+              onClick={() => setSelectedMachineName("")}
+            />
+            <SidePanel
+              label={`${selectedMachineView.id} · Calculated state`}
+              title={selectedMachineView.name}
+              onClose={() => setSelectedMachineName("")}
+              modal
+            >
             <div className="side-panel-status">
               <StatusChip status={selectedMachineView.status} />
             </div>
@@ -2395,7 +2805,8 @@ export default function DashboardPage() {
                 <small>Availability × Performance × Quality</small>
               </div>
             </div>
-          </SidePanel>
+            </SidePanel>
+          </div>
         ) : null}
       </div>
     </div>
@@ -2419,10 +2830,7 @@ export default function DashboardPage() {
           <div>
             <span className="eyebrow">Management reporting</span>
             <h1>Filtered operations report</h1>
-            <p>
-              The printable report and all ten Excel worksheets use the same
-              verified analytics selection shown on this dashboard.
-            </p>
+            <p>One verified dataset for dashboard, Excel and PDF.</p>
           </div>
           <div className="report-actions">
             <button
@@ -2677,13 +3085,30 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="dashboard-shell">
-      <aside className="dashboard-sidebar">
+    <div
+      className={`dashboard-shell ${
+        sidebarExpanded ? "sidebar-expanded" : "sidebar-collapsed"
+      }`}
+      data-theme={theme}
+    >
+      <aside
+        className="dashboard-sidebar"
+        aria-label="Primary navigation"
+        onMouseEnter={() => setSidebarExpanded(true)}
+        onMouseLeave={() => setSidebarExpanded(false)}
+        onFocusCapture={() => setSidebarExpanded(true)}
+        onBlurCapture={(event) => {
+          if (
+            !event.currentTarget.contains(event.relatedTarget as Node | null)
+          ) {
+            setSidebarExpanded(false);
+          }
+        }}
+      >
+        <div className="sidebar-hover-rail" aria-hidden="true" />
         <div className="brand-lockup">
-          <div className="brand-symbol">MI</div>
-          <div>
-            <strong>MMS Intelligence™</strong>
-            <span>Industrial analytics</span>
+          <div className="brand-symbol" aria-label="3D Intelligence">
+            3D
           </div>
         </div>
 
@@ -2700,6 +3125,7 @@ export default function DashboardPage() {
               className={activeTab === item.id ? "active" : ""}
               onClick={() => setActiveTab(item.id)}
               aria-current={activeTab === item.id ? "page" : undefined}
+              title={!sidebarExpanded ? item.label : undefined}
             >
               <span className="nav-icon">{item.icon}</span>
               <span>{item.label}</span>
@@ -2730,14 +3156,20 @@ export default function DashboardPage() {
           <div className="topbar-context">
             <span>Machine Monitoring System</span>
             <strong>{activeLabel}</strong>
-            {analytics ? (
-              <small title={analytics.calculationPolicy.description}>
-                Calculation policy {analytics.calculationPolicy.version} ·{" "}
-                {analytics.calculationPolicy.status.replaceAll("_", " ")}
-              </small>
-            ) : null}
           </div>
           <div className="topbar-actions">
+            <button
+              type="button"
+              className="theme-toggle"
+              onClick={() =>
+                setTheme((current) => (current === "dark" ? "light" : "dark"))
+              }
+              aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+              title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+            >
+              <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
+              <strong>{theme === "dark" ? "Light" : "Dark"}</strong>
+            </button>
             <button
               className="topbar-alert-count"
               onClick={() => setActiveTab("alerts")}
@@ -2866,26 +3298,48 @@ export default function DashboardPage() {
           </details>
         </section>
 
-        <section className="global-filter-bar">
+        <section className="global-filter-bar" aria-label="Primary analytics filters">
+          <div className="filter-date-range" role="group" aria-label="Date range">
+            <span>Date range</span>
+            <div>
+              <label>
+                <span className="sr-only">Date from</span>
+                <input
+                  type="date"
+                  value={dateFrom}
+                  min={filterOptions.dates[0]}
+                  max={filterOptions.dates.at(-1)}
+                  onChange={(event) => setDateFrom(event.target.value)}
+                  aria-label="Date from"
+                />
+              </label>
+              <i aria-hidden="true">–</i>
+              <label>
+                <span className="sr-only">Date to</span>
+                <input
+                  type="date"
+                  value={dateTo}
+                  min={filterOptions.dates[0]}
+                  max={filterOptions.dates.at(-1)}
+                  onChange={(event) => setDateTo(event.target.value)}
+                  aria-label="Date to"
+                />
+              </label>
+            </div>
+          </div>
           <label>
-            <span>Date from</span>
-            <input
-              type="date"
-              value={dateFrom}
-              min={filterOptions.dates[0]}
-              max={filterOptions.dates.at(-1)}
-              onChange={(event) => setDateFrom(event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Date to</span>
-            <input
-              type="date"
-              value={dateTo}
-              min={filterOptions.dates[0]}
-              max={filterOptions.dates.at(-1)}
-              onChange={(event) => setDateTo(event.target.value)}
-            />
+            <span>Machine</span>
+            <select
+              value={selectedMachine}
+              onChange={(event) => setSelectedMachine(event.target.value)}
+            >
+              <option value="">All machines</option>
+              {filterOptions.machines.map((machine) => (
+                <option key={machine} value={machine}>
+                  {machine}
+                </option>
+              ))}
+            </select>
           </label>
           <label>
             <span>Shift</span>
@@ -2901,22 +3355,20 @@ export default function DashboardPage() {
               ))}
             </select>
           </label>
-          <label>
-            <span>Machine</span>
-            <select
-              value={selectedMachine}
-              onChange={(event) => setSelectedMachine(event.target.value)}
-            >
-              <option value="">All machines</option>
-              {filterOptions.machines.map((machine) => (
-                <option key={machine} value={machine}>
-                  {machine}
-                </option>
-              ))}
-            </select>
-          </label>
+          <button
+            type="button"
+            className={`button advanced-filter-toggle ${
+              advancedFiltersOpen ? "active" : ""
+            }`}
+            onClick={() => setAdvancedFiltersOpen((open) => !open)}
+            aria-expanded={advancedFiltersOpen}
+            aria-controls="advanced-analytics-filters"
+          >
+            Advanced filters
+            <span>{activeSecondaryFilterCount}</span>
+          </button>
           <div className="filter-result">
-            <span>{analytics.activeFilterCount} active filters</span>
+            <span>{analytics.activeFilterCount} filters applied</span>
             <strong>
               {integerFormat.format(analytics.scope.downtimeEventCount)} events
             </strong>
@@ -2926,7 +3378,12 @@ export default function DashboardPage() {
           </button>
         </section>
 
-        <section className="advanced-filter-bar" aria-label="Advanced analytics filters">
+        <section
+          id="advanced-analytics-filters"
+          className="advanced-filter-bar"
+          aria-label="Advanced analytics filters"
+          hidden={!advancedFiltersOpen}
+        >
           <MultiSelectFilter
             label="Products"
             options={filterOptions.products}
@@ -2995,11 +3452,11 @@ export default function DashboardPage() {
 
         <footer className="dashboard-footer">
           <div className="footer-brand">
-            <span>MI</span>
-            <strong>MMS Intelligence™</strong>
+            <span>3D</span>
+            <strong>3D INTELLIGENCE™</strong>
           </div>
           <p>
-            © 2026 MMS Intelligence™. All rights reserved. MMS Intelligence™
+            © 2026 3D INTELLIGENCE™. All rights reserved. 3D INTELLIGENCE™
             and associated analytics engines are registered trademarks.
           </p>
           <span>Standalone intelligence module · v1.0</span>
