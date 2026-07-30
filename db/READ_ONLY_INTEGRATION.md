@@ -7,9 +7,10 @@ calculations do not change with the source.
 
 ## Required information from 3D
 
-The concrete database adapter must not be selected until 3D provides:
+The database technology is confirmed as MySQL. Live integration must not be
+enabled until 3D also provides:
 
-1. Database technology and version.
+1. MySQL version.
 2. Host, port and database name, or an approved private connection endpoint.
 3. A dedicated account with `SELECT` permission only.
 4. SSL/TLS requirements and any VPN or IP allow-list requirement.
@@ -45,5 +46,7 @@ Before database access is enabled for the dashboard:
 6. Compare rejection, rework, scrap and data-quality findings.
 7. Investigate every mismatch before enabling automatic database refresh.
 
-Near-real-time polling, cursors, retries, modified-record handling and sync
-logs belong to Phase 9 and are intentionally excluded from this phase.
+Near-real-time polling, duplicate prevention, retry handling, stale detection
+and bounded logs are implemented by `app/synchronization-engine.ts`. They
+operate above this adapter boundary and must be acceptance-tested against the
+live MySQL schema before automatic database refresh is enabled.

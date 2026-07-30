@@ -1,5 +1,9 @@
 # MMS Intelligence deployment
 
+The complete deployment and environment guide is available at
+[`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md). This file is the short
+release checklist.
+
 The application supports three operating modes:
 
 - Laptop: install dependencies, run `npm run build`, then `npm run start`.
@@ -23,3 +27,13 @@ npm run smoke:deployment
 
 Check `/api/health` after deployment. It deliberately exposes no credentials,
 connection strings, filenames, or client records.
+
+The current production policy must be:
+
+```text
+mms-direct-quantity-v2 · 2.0.0 · confirmed
+```
+
+The repository contains a read-only MySQL adapter boundary, but live database
+operation remains disabled until 3D provides its schema, a technology-specific
+client and approved `SELECT`-only credentials.
