@@ -51,7 +51,7 @@ separate, read-only analytics layer.
 ## Current acceptance state
 
 - Calculation policy `2.0.0` is confirmed.
-- 120 automated tests pass.
+- 124 automated tests pass.
 - Cloudflare/Vinext and Vercel builds pass.
 - The Phase 27 report, print and responsive checks pass.
 - Final formal acceptance remains pending for private, representative

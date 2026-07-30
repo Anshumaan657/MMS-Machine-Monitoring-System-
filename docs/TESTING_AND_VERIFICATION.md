@@ -4,7 +4,7 @@
 
 | Check | Result |
 |---|---|
-| Automated tests | 120 passed, 0 failed |
+| Automated tests | 124 passed, 0 failed |
 | Lint | Passed |
 | Cloudflare/Vinext build | Passed |
 | Next.js/Vercel build | Passed |
@@ -51,12 +51,17 @@ Tracked evidence:
 - `verification/PHASE_27_UAT.md`
 - `verification/phase27-acceptance-summary.json`
 - `verification/phase27-3d-verification-cases.template.json`
+- `verification/PHASE_29_CONFIRMATION.md`
+- `verification/phase29-acceptance.template.json`
 
 Private/generated evidence:
 
 - `verification-input/3d-selected-results.json`
 - `verification-output/phase12-verification.json`
 - `verification-output/phase12-verification.md`
+- `verification-input/phase29-3d-results.json`
+- `verification-output/phase29-acceptance.json`
+- `verification-output/phase29-acceptance.md`
 - rendered print/PDF artifacts
 
 Private evidence must not be committed.
@@ -102,15 +107,18 @@ For each case record:
 - mismatch cause;
 - correction and repeat result.
 
-## Strict sample command
+## Verification commands
 
 ```sh
 npm run verify:sample
 npm run verify:sample:strict
+npm run verify:phase29
+npm run verify:phase29:strict
 ```
 
-The strict command remains blocked until private 3D selected-result values are
-provided and the applicable acceptance conditions pass.
+`verify:phase29` recalculates the complete workbook and produces the Phase 29
+JSON and Markdown reports. Its strict variant remains blocked until private 3D
+selected-result values meet the 95% gate and written sign-off is recorded.
 
 ## Final sign-off
 

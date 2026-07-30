@@ -44,9 +44,9 @@ npm run build:vercel
 npm run smoke:deployment
 ```
 
-The current automated suite contains 120 passing tests. Formal 3D acceptance
+The current automated suite contains 124 passing tests. Formal 3D acceptance
 still requires the private representative side-by-side cases described in
-[`verification/PHASE_27_UAT.md`](verification/PHASE_27_UAT.md).
+[`verification/PHASE_29_CONFIRMATION.md`](verification/PHASE_29_CONFIRMATION.md).
 
 ## Documentation
 
@@ -76,6 +76,6 @@ database account if MySQL integration is enabled later.
 
 ## Release status
 
-This repository is ready for Phase 28 handover documentation and Phase 29
-side-by-side acceptance. It is not the final `v1.0.0` release until the
-representative 3D cases pass and written sign-off is recorded.
+The Phase 28 handover package and Phase 29 confirmed-policy acceptance tooling
+are implemented. It is not the final `v1.0.0` release until the representative
+3D cases pass and written sign-off is recorded.
