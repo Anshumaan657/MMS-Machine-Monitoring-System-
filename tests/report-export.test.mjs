@@ -12,7 +12,7 @@ function rowByLabel(rows, label) {
   return rows.find((row) => row[0] === label);
 }
 
-test("exports all ten filtered analytics worksheets", () => {
+test("exports all eleven filtered analytics worksheets", () => {
   const data = exactCanonicalFixture();
   const analytics = queryMmsAnalytics(data, {
     date: "2024-01-01",
@@ -36,6 +36,7 @@ test("exports all ten filtered analytics worksheets", () => {
     "Financial Losses",
     "Data-Quality Findings",
     "Alerts",
+    "Management Summary",
     "Rejection Rework Scrap",
     "Formula Policy and Metadata",
   ]);

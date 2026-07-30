@@ -1,6 +1,8 @@
 import * as XLSX from "xlsx";
 import type { FilteredMmsAnalytics } from "./mms.ts";
 import type { OperationalAlert } from "./operational-alert-engine.ts";
+import type { ManagementSummary } from "./management-summary-engine.ts";
+import { sanitizeSpreadsheetText } from "./security.ts";
 
 export type ReportMachineState = {
   name: string;
@@ -15,6 +17,7 @@ export type FilteredReportInput = {
   selectedMachine?: string | null;
   machines: ReportMachineState[];
   alerts?: OperationalAlert[];
+  managementSummary?: ManagementSummary | null;
   generatedAt?: string;
   lastSuccessfulSyncAt?: string | null;
   dataSource?: string;
@@ -84,8 +87,16 @@ function applySheetDesign(sheet: XLSX.WorkSheet): XLSX.WorkSheet {
 }
 
 function jsonSheet(rows: Record<string, unknown>[]): XLSX.WorkSheet {
+  const safeRows = rows.map((row) =>
+    Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [
+        key,
+        typeof value === "string" ? sanitizeSpreadsheetText(value) : value,
+      ]),
+    ),
+  );
   return applySheetDesign(
-    XLSX.utils.json_to_sheet(rows.slice(0, MAX_EXCEL_DATA_ROWS)),
+    XLSX.utils.json_to_sheet(safeRows.slice(0, MAX_EXCEL_DATA_ROWS)),
   );
 }
 
@@ -122,6 +133,7 @@ export function buildFilteredReportWorkbook({
   selectedMachine,
   machines,
   alerts = [],
+  managementSummary = null,
   generatedAt = new Date().toISOString(),
   lastSuccessfulSyncAt = null,
   dataSource = "Excel workbook",
@@ -371,6 +383,46 @@ export function buildFilteredReportWorkbook({
     "Supporting Record": alert.supportingRecord.id,
     Message: alert.message,
   }));
+  const managementRows = managementSummary
+    ? [
+        ...managementSummary.executiveSummary.map((item) => ({
+          Section: "Executive summary",
+          Statement: item.text,
+          "Evidence IDs": item.evidenceIds.join(", "),
+          Priority: "",
+        })),
+        ...managementSummary.productionLosses.map((item) => ({
+          Section: "Production losses",
+          Statement: item.text,
+          "Evidence IDs": item.evidenceIds.join(", "),
+          Priority: "",
+        })),
+        ...managementSummary.comparisons.map((item) => ({
+          Section: "Comparisons",
+          Statement: item.text,
+          "Evidence IDs": item.evidenceIds.join(", "),
+          Priority: "",
+        })),
+        ...managementSummary.bottlenecks.map((item) => ({
+          Section: "Bottlenecks",
+          Statement: item.text,
+          "Evidence IDs": item.evidenceIds.join(", "),
+          Priority: "",
+        })),
+        ...managementSummary.dataCaveats.map((item) => ({
+          Section: "Data caveats",
+          Statement: item.text,
+          "Evidence IDs": item.evidenceIds.join(", "),
+          Priority: "",
+        })),
+        ...managementSummary.recommendations.map((item) => ({
+          Section: "Recommendations",
+          Statement: item.text,
+          "Evidence IDs": item.evidenceIds.join(", "),
+          Priority: item.priority,
+        })),
+      ]
+    : [];
 
   const metadataRows = [
     ["Metadata", "Value"],
@@ -418,6 +470,12 @@ export function buildFilteredReportWorkbook({
   append(workbook, usedNames, "Financial Losses", jsonSheet(financialRows));
   append(workbook, usedNames, "Data-Quality Findings", jsonSheet(findingRows));
   append(workbook, usedNames, "Alerts", jsonSheet(alertRows));
+  append(
+    workbook,
+    usedNames,
+    "Management Summary",
+    jsonSheet(managementRows),
+  );
   append(workbook, usedNames, "Rejection Rework Scrap", jsonSheet(qualityRows));
   const metadata = XLSX.utils.aoa_to_sheet(metadataRows);
   metadata["!cols"] = [{ wch: 36 }, { wch: 72 }];

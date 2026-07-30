@@ -24,7 +24,10 @@ export type OperationalAlertType =
   | "MISSING_MACHINE_DATA"
   | "MISSING_OPERATOR"
   | "MISSING_DOWNTIME_REASON"
+  | "QUANTITY_MISMATCH"
+  | "INCONSISTENT_MACHINE_COST"
   | "INVALID_DURATION"
+  | "STALE_SYNCHRONIZATION"
   | "DATABASE_SYNC_FAILURE";
 
 export type OperationalAlertSeverity = "critical" | "warning";
@@ -59,6 +62,8 @@ export type OperationalAlert = {
   status: OperationalAlertStatus;
   acknowledgementState: AlertAcknowledgementState;
   acknowledgedAt: string | null;
+  triggeredAt: string;
+  resolvedAt: string | null;
   message: string;
 };
 
@@ -73,11 +78,13 @@ export type OperationalAlertThresholds = {
 
 export type OperationalAlertConfig = {
   enabled: Record<OperationalAlertType, boolean>;
+  severities: Record<OperationalAlertType, OperationalAlertSeverity>;
   thresholds: OperationalAlertThresholds;
 };
 
 export type OperationalAlertConfigInput = {
   enabled?: Partial<Record<OperationalAlertType, boolean>>;
+  severities?: Partial<Record<OperationalAlertType, OperationalAlertSeverity>>;
   thresholds?: Partial<OperationalAlertThresholds>;
 };
 
@@ -104,7 +111,10 @@ export const OPERATIONAL_ALERT_LABELS: Record<
   MISSING_MACHINE_DATA: "Missing machine data",
   MISSING_OPERATOR: "Missing operator",
   MISSING_DOWNTIME_REASON: "Missing downtime reason",
+  QUANTITY_MISMATCH: "Quantity mismatch",
+  INCONSISTENT_MACHINE_COST: "Inconsistent machine cost",
   INVALID_DURATION: "Invalid duration",
+  STALE_SYNCHRONIZATION: "Stale synchronization",
   DATABASE_SYNC_FAILURE: "Database synchronization failure",
 };
 
@@ -119,8 +129,27 @@ export const DEFAULT_OPERATIONAL_ALERT_CONFIG: OperationalAlertConfig = {
     MISSING_MACHINE_DATA: true,
     MISSING_OPERATOR: true,
     MISSING_DOWNTIME_REASON: true,
+    QUANTITY_MISMATCH: true,
+    INCONSISTENT_MACHINE_COST: true,
     INVALID_DURATION: true,
+    STALE_SYNCHRONIZATION: true,
     DATABASE_SYNC_FAILURE: true,
+  },
+  severities: {
+    EXCESSIVE_DOWNTIME: "critical",
+    SYSTEM_OFF: "critical",
+    PRODUCTION_BELOW_TARGET: "warning",
+    ABNORMAL_CYCLE_TIME: "warning",
+    HIGH_PRODUCTION_LOSS: "critical",
+    HIGH_MACHINE_HOUR_LOSS: "critical",
+    MISSING_MACHINE_DATA: "critical",
+    MISSING_OPERATOR: "warning",
+    MISSING_DOWNTIME_REASON: "warning",
+    QUANTITY_MISMATCH: "warning",
+    INCONSISTENT_MACHINE_COST: "warning",
+    INVALID_DURATION: "critical",
+    STALE_SYNCHRONIZATION: "warning",
+    DATABASE_SYNC_FAILURE: "critical",
   },
   thresholds: {
     excessiveDowntimeSeconds: 3_600,
@@ -147,6 +176,10 @@ export function normalizeOperationalAlertConfig(
     enabled: {
       ...DEFAULT_OPERATIONAL_ALERT_CONFIG.enabled,
       ...(config.enabled ?? {}),
+    },
+    severities: {
+      ...DEFAULT_OPERATIONAL_ALERT_CONFIG.severities,
+      ...(config.severities ?? {}),
     },
     thresholds: {
       excessiveDowntimeSeconds: finiteNonNegative(
@@ -239,6 +272,8 @@ type AddAlertInput = {
 function makeAlert(
   input: AddAlertInput,
   acknowledgements: AlertAcknowledgements,
+  config: OperationalAlertConfig,
+  generatedAt: string,
 ): OperationalAlert {
   const id = alertId(input.type, input.record);
   const acknowledgedAt = acknowledgements[id] ?? null;
@@ -246,7 +281,7 @@ function makeAlert(
     id,
     type: input.type,
     title: OPERATIONAL_ALERT_LABELS[input.type],
-    severity: input.severity,
+    severity: config.severities[input.type],
     ...input.context,
     triggeringValue: input.triggeringValue,
     threshold: input.threshold,
@@ -256,6 +291,8 @@ function makeAlert(
       ? "acknowledged"
       : "unacknowledged",
     acknowledgedAt,
+    triggeredAt: input.context.time ?? generatedAt,
+    resolvedAt: null,
     message: input.message,
   };
 }
@@ -273,6 +310,7 @@ function productionAlerts(
   policyMetrics: PolicyProductionMetrics | undefined,
   config: OperationalAlertConfig,
   acknowledgements: AlertAcknowledgements,
+  generatedAt: string,
 ): OperationalAlert[] {
   const alerts: OperationalAlert[] = [];
   const context = recordContext(interval);
@@ -285,6 +323,8 @@ function productionAlerts(
         makeAlert(
           { ...input, record, context },
           acknowledgements,
+          config,
+          generatedAt,
         ),
       );
     }
@@ -403,6 +443,7 @@ function downtimeAlerts(
   intelligenceById: ReadonlyMap<string, DowntimeEventIntelligence>,
   config: OperationalAlertConfig,
   acknowledgements: AlertAcknowledgements,
+  generatedAt: string,
 ): OperationalAlert[] {
   const alerts: OperationalAlert[] = [];
   const context = recordContext(event);
@@ -416,6 +457,8 @@ function downtimeAlerts(
         makeAlert(
           { ...input, record, context },
           acknowledgements,
+          config,
+          generatedAt,
         ),
       );
     }
@@ -532,22 +575,51 @@ function synchronizationAlerts(
   context: AlertSynchronizationContext | undefined,
   config: OperationalAlertConfig,
   acknowledgements: AlertAcknowledgements,
+  generatedAt: string,
 ): OperationalAlert[] {
-  if (
-    !context ||
-    !config.enabled.DATABASE_SYNC_FAILURE ||
-    context.sourceKind !== "database" ||
-    (context.status !== "error" && context.status !== "stale")
-  ) {
-    return [];
-  }
+  if (!context) return [];
   const record: SupportingRecord = {
-    id: `database:${context.sourceName ?? "mms"}`,
+    id: `${context.sourceKind}:${context.sourceName ?? "mms"}`,
     sheet: "Synchronization",
     rowNumber: null,
   };
-  return [
-    makeAlert(
+  const alerts: OperationalAlert[] = [];
+  if (
+    config.enabled.STALE_SYNCHRONIZATION &&
+    context.status === "stale"
+  ) {
+    alerts.push(makeAlert(
+      {
+        type: "STALE_SYNCHRONIZATION",
+        severity: "warning",
+        record,
+        context: {
+          machine: "All machines",
+          shift: "All shifts",
+          date: context.lastAttemptAt?.slice(0, 10) ?? null,
+          time: context.lastAttemptAt,
+        },
+        triggeringValue: {
+          value: context.status,
+          unit: "synchronization status",
+        },
+        threshold: {
+          value: "Fresh synchronized data",
+          unit: "required state",
+        },
+        message: "The MMS source has not produced fresh data within the configured window.",
+      },
+      acknowledgements,
+      config,
+      generatedAt,
+    ));
+  }
+  if (
+    config.enabled.DATABASE_SYNC_FAILURE &&
+    context.sourceKind === "database" &&
+    (context.status === "error" || context.status === "stale")
+  ) {
+    alerts.push(makeAlert(
       {
         type: "DATABASE_SYNC_FAILURE",
         severity: "critical",
@@ -569,8 +641,80 @@ function synchronizationAlerts(
         message: "The MMS database synchronization is unavailable or stale.",
       },
       acknowledgements,
-    ),
-  ];
+      config,
+      generatedAt,
+    ));
+  }
+  return alerts;
+}
+
+function findingAlerts(
+  analytics: FilteredMmsAnalytics | undefined,
+  config: OperationalAlertConfig,
+  acknowledgements: AlertAcknowledgements,
+  generatedAt: string,
+): OperationalAlert[] {
+  if (!analytics) return [];
+  return analytics.dataQuality.structuredFindings.flatMap((finding) => {
+    const type =
+      finding.code === "REPORTED_QUANTITY_MISMATCH"
+        ? "QUANTITY_MISMATCH"
+        : finding.code === "INCONSISTENT_MACHINE_HOUR_COST"
+          ? "INCONSISTENT_MACHINE_COST"
+          : null;
+    if (!type || !config.enabled[type]) return [];
+    const record: SupportingRecord = {
+      id: finding.recordId,
+      sheet: finding.sourceSheet,
+      rowNumber: finding.sourceRow,
+    };
+    return [
+      makeAlert(
+        {
+          type,
+          severity: config.severities[type],
+          record,
+          context: {
+            machine: finding.machine,
+            shift: finding.shift,
+            date: finding.date,
+            time: finding.time,
+          },
+          triggeringValue: {
+            value: finding.reportedValue,
+            unit: finding.fieldName,
+          },
+          threshold: {
+            value: finding.expectedValue,
+            unit: "expected value",
+          },
+          message: finding.recommendedAction,
+        },
+        acknowledgements,
+        config,
+        generatedAt,
+      ),
+    ];
+  });
+}
+
+export function reconcileOperationalAlertLifecycle(
+  activeAlerts: readonly OperationalAlert[],
+  previousAlerts: readonly OperationalAlert[] = [],
+  resolvedAt = new Date().toISOString(),
+): OperationalAlert[] {
+  const current = new Map(activeAlerts.map((alert) => [alert.id, alert]));
+  const lifecycle = new Map<string, OperationalAlert>();
+  for (const alert of activeAlerts) lifecycle.set(alert.id, alert);
+  for (const previous of previousAlerts) {
+    if (current.has(previous.id)) continue;
+    lifecycle.set(previous.id, {
+      ...previous,
+      status: "resolved",
+      resolvedAt: previous.resolvedAt ?? resolvedAt,
+    });
+  }
+  return [...lifecycle.values()];
 }
 
 export function buildOperationalAlerts(
@@ -585,10 +729,14 @@ export function buildOperationalAlerts(
      * already selected by the unified analytics query.
      */
     analytics?: FilteredMmsAnalytics;
+    previousAlerts?: readonly OperationalAlert[];
+    includeResolved?: boolean;
+    generatedAt?: string;
   } = {},
 ): OperationalAlert[] {
   const config = normalizeOperationalAlertConfig(configInput);
   const acknowledgements = options.acknowledgements ?? {};
+  const generatedAt = options.generatedAt ?? new Date().toISOString();
   const productionIntervals =
     options.analytics?.records.productionIntervals ??
     data.productionIntervals;
@@ -656,15 +804,29 @@ export function buildOperationalAlerts(
         policyMetrics.get(interval.id),
         config,
         acknowledgements,
+        generatedAt,
       ),
     ),
     ...downtimeEvents.flatMap((event) =>
-      downtimeAlerts(event, intelligenceById, config, acknowledgements),
+      downtimeAlerts(
+        event,
+        intelligenceById,
+        config,
+        acknowledgements,
+        generatedAt,
+      ),
+    ),
+    ...findingAlerts(
+      options.analytics,
+      config,
+      acknowledgements,
+      generatedAt,
     ),
     ...synchronizationAlerts(
       options.synchronization,
       config,
       acknowledgements,
+      generatedAt,
     ),
   ];
 
@@ -672,8 +834,17 @@ export function buildOperationalAlerts(
     critical: 0,
     warning: 1,
   };
-  return alerts.sort(
+  const deduplicated = [...new Map(alerts.map((alert) => [alert.id, alert])).values()];
+  const lifecycle = options.includeResolved
+    ? reconcileOperationalAlertLifecycle(
+        deduplicated,
+        options.previousAlerts,
+        generatedAt,
+      )
+    : deduplicated;
+  return lifecycle.sort(
     (left, right) =>
+      Number(left.status === "resolved") - Number(right.status === "resolved") ||
       severityRank[left.severity] - severityRank[right.severity] ||
       (right.time ?? "").localeCompare(left.time ?? "") ||
       left.id.localeCompare(right.id),

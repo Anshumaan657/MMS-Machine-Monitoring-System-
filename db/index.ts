@@ -1,13 +1,19 @@
-import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./schema";
 
-export function getDb() {
-  if (!env.DB) {
+type D1Binding = Parameters<typeof drizzle>[0];
+
+/**
+ * D1 remains optional and is injected by the Cloudflare adapter. Keeping the
+ * binding out of a static `cloudflare:workers` import lets the same source tree
+ * type-check on local, company-server, and Vercel deployments.
+ */
+export function getDb(database?: D1Binding | null) {
+  if (!database) {
     throw new Error(
-      "Cloudflare D1 binding `DB` is unavailable. Set the `d1` field in .openai/hosting.json to `DB` or let your control plane inject the real binding values before using the database."
+      "Cloudflare D1 binding `DB` is unavailable. Inject the binding before using the optional D1 store.",
     );
   }
 
-  return drizzle(env.DB, { schema });
+  return drizzle(database, { schema });
 }

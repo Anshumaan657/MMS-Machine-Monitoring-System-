@@ -11,6 +11,7 @@ export type ManagementSummaryAiConfig = {
   model?: string;
   endpoint?: string;
   fetchImplementation?: typeof fetch;
+  timeoutMs?: number;
 };
 
 const SUMMARY_SCHEMA = {
@@ -134,11 +135,14 @@ function assertCleanText(value: unknown, field: string): string {
 function parseStatements(
   value: unknown,
   field: string,
-  validEvidenceIds: Set<string>,
+  evidence: VerifiedManagementEvidence,
 ): EvidenceBackedStatement[] {
   if (!Array.isArray(value) || value.length > 5) {
     throw new Error(`AI summary ${field} is invalid.`);
   }
+  const evidenceById = new Map(
+    evidence.facts.map((item) => [item.id, item]),
+  );
   return value.map((item, index) => {
     if (!item || typeof item !== "object") {
       throw new Error(`AI summary ${field}[${index}] is invalid.`);
@@ -149,17 +153,41 @@ function parseStatements(
       candidate.evidenceIds.length < 1 ||
       candidate.evidenceIds.length > 4 ||
       candidate.evidenceIds.some(
-        (id) => typeof id !== "string" || !validEvidenceIds.has(id),
+        (id) => typeof id !== "string" || !evidenceById.has(id),
       )
     ) {
       throw new Error(
         `AI summary ${field}[${index}] cites unsupported evidence.`,
       );
     }
-    return {
-      text: assertCleanText(candidate.text, `${field}[${index}].text`),
-      evidenceIds: candidate.evidenceIds as string[],
-    };
+    const text = assertCleanText(
+      candidate.text,
+      `${field}[${index}].text`,
+    );
+    const evidenceIds = candidate.evidenceIds as string[];
+    const citedFacts = evidenceIds.map((id) => evidenceById.get(id)!);
+    if (
+      field !== "dataCaveats" &&
+      citedFacts.some((fact) => fact.reliability === "pending")
+    ) {
+      throw new Error(
+        `AI summary ${field}[${index}] treats pending evidence as verified.`,
+      );
+    }
+    if (/\b(?:quality|oee)\b/i.test(text)) {
+      const requiredIds = new Set(["quality.factor", "oee.final"]);
+      if (
+        !citedFacts.some(
+          (fact) =>
+            requiredIds.has(fact.id) && fact.reliability === "verified",
+        )
+      ) {
+        throw new Error(
+          `AI summary ${field}[${index}] made an unsupported Quality or OEE claim.`,
+        );
+      }
+    }
+    return { text, evidenceIds };
   });
 }
 
@@ -173,11 +201,10 @@ export function validateAiManagementSummary(
     throw new Error("AI summary response is not an object.");
   }
   const candidate = value as RawAiSummary;
-  const validIds = new Set(evidence.facts.map((item) => item.id));
   const recommendations = parseStatements(
     candidate.recommendations,
     "recommendations",
-    validIds,
+    evidence,
   ).map((recommendation, index) => {
     const rawPriority = (
       candidate.recommendations as Array<{ priority?: unknown }>
@@ -199,27 +226,27 @@ export function validateAiManagementSummary(
     executiveSummary: parseStatements(
       candidate.executiveSummary,
       "executiveSummary",
-      validIds,
+      evidence,
     ),
     productionLosses: parseStatements(
       candidate.productionLosses,
       "productionLosses",
-      validIds,
+      evidence,
     ),
     comparisons: parseStatements(
       candidate.comparisons,
       "comparisons",
-      validIds,
+      evidence,
     ),
     bottlenecks: parseStatements(
       candidate.bottlenecks,
       "bottlenecks",
-      validIds,
+      evidence,
     ),
     dataCaveats: parseStatements(
       candidate.dataCaveats,
       "dataCaveats",
-      validIds,
+      evidence,
     ),
     recommendations,
     pendingClaims: [...evidence.pendingClaims],
@@ -234,10 +261,18 @@ export async function generateAiManagementSummary(
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured.");
   const model = config.model?.trim() || "gpt-5.6-sol";
   const request = config.fetchImplementation ?? fetch;
-  const response = await request(
-    config.endpoint ?? "https://api.openai.com/v1/responses",
-    {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    Math.max(1_000, config.timeoutMs ?? 20_000),
+  );
+  let response: Response;
+  try {
+    response = await request(
+      config.endpoint ?? "https://api.openai.com/v1/responses",
+      {
       method: "POST",
+      signal: controller.signal,
       headers: {
         authorization: `Bearer ${apiKey}`,
         "content-type": "application/json",
@@ -254,9 +289,14 @@ export async function generateAiManagementSummary(
             schema: SUMMARY_SCHEMA,
           },
         },
+        store: false,
+        max_output_tokens: 2_000,
       }),
-    },
-  );
+      },
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!response.ok) {
     throw new Error(`AI summary request failed with status ${response.status}.`);
   }
@@ -284,12 +324,14 @@ export async function generateManagementSummaryWithFallback(
       fallbackReason: null,
     };
   } catch (error) {
+    const fallbackReason =
+      error instanceof Error &&
+      error.message === "OPENAI_API_KEY is not configured."
+        ? "AI is not configured; deterministic verified summary used."
+        : "AI output was unavailable or failed evidence validation; deterministic verified summary used.";
     return {
       summary: buildDeterministicManagementSummary(evidence),
-      fallbackReason:
-        error instanceof Error
-          ? error.message
-          : "AI summary generation failed.",
+      fallbackReason,
     };
   }
 }

@@ -1,7 +1,8 @@
+import type { CanonicalMmsData } from "./mms.ts";
 import {
-  parseMmsCanonicalFile,
-  type CanonicalMmsData,
-} from "./mms.ts";
+  DEFAULT_MAX_WORKBOOK_BYTES,
+  isSupportedWorkbookName,
+} from "./security.ts";
 
 export type MmsDataSourceKind = "database" | "excel";
 
@@ -43,6 +44,35 @@ export type MmsDataSourceLoadResult = {
   };
   primaryError: MmsDataSourceError | null;
 };
+
+export type ExcelMmsDataSourceOptions = {
+  maxFileSizeBytes?: number;
+};
+
+export function validateMmsWorkbookUpload(
+  fileName: string,
+  byteLength: number,
+  maxFileSizeBytes = DEFAULT_MAX_WORKBOOK_BYTES,
+): void {
+  if (!isSupportedWorkbookName(fileName)) {
+    throw new MmsDataSourceError(
+      "FILE_ERROR",
+      "Only .xls and .xlsx MMS workbooks are supported.",
+    );
+  }
+  if (!Number.isFinite(byteLength) || byteLength <= 0) {
+    throw new MmsDataSourceError(
+      "FILE_ERROR",
+      "The selected workbook is empty.",
+    );
+  }
+  if (byteLength > maxFileSizeBytes) {
+    throw new MmsDataSourceError(
+      "FILE_ERROR",
+      `The workbook exceeds the ${Math.round(maxFileSizeBytes / 1_048_576)} MB safety limit.`,
+    );
+  }
+}
 
 function normalizedSourceError(
   error: unknown,
@@ -101,19 +131,30 @@ export class ExcelMmsDataSource implements MmsDataSource {
   readonly kind = "excel" as const;
   readonly name: string;
   readonly #readFile: () => Promise<ArrayBuffer>;
+  readonly #maxFileSizeBytes: number;
 
   constructor(
     fileName: string,
     file: ArrayBuffer | (() => Promise<ArrayBuffer>),
+    options: ExcelMmsDataSourceOptions = {},
   ) {
     this.name = fileName;
+    this.#maxFileSizeBytes =
+      options.maxFileSizeBytes ?? DEFAULT_MAX_WORKBOOK_BYTES;
     this.#readFile =
       typeof file === "function" ? file : async () => file.slice(0);
   }
 
   async load(): Promise<CanonicalMmsData> {
     try {
-      return parseMmsCanonicalFile(await this.#readFile(), this.name);
+      const buffer = await this.#readFile();
+      validateMmsWorkbookUpload(
+        this.name,
+        buffer.byteLength,
+        this.#maxFileSizeBytes,
+      );
+      const { parseMmsCanonicalFile } = await import("./mms.ts");
+      return parseMmsCanonicalFile(buffer, this.name);
     } catch (error) {
       if (error instanceof MmsDataSourceError) throw error;
       throw new MmsDataSourceError(

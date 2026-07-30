@@ -5,6 +5,7 @@ import {
   DEFAULT_OPERATIONAL_ALERT_CONFIG,
   buildOperationalAlerts,
   normalizeOperationalAlertConfig,
+  reconcileOperationalAlertLifecycle,
 } from "../app/operational-alert-engine.ts";
 import { queryMmsAnalytics } from "../app/analytics-query-engine.ts";
 
@@ -337,6 +338,30 @@ test("normalizes invalid threshold values to safe defaults", () => {
     normalized.thresholds.minimumProductionAttainment,
     DEFAULT_OPERATIONAL_ALERT_CONFIG.thresholds.minimumProductionAttainment,
   );
+});
+
+test("supports configurable severity, deduplication, and resolution", () => {
+  const first = buildOperationalAlerts(
+    canonicalData(),
+    { severities: { MISSING_OPERATOR: "critical" } },
+    { generatedAt: "2026-07-26T10:00:00.000Z" },
+  );
+  const missingOperator = first.find(
+    (alert) => alert.type === "MISSING_OPERATOR",
+  );
+  assert.equal(missingOperator?.severity, "critical");
+  assert.equal(
+    new Set(first.map((alert) => alert.id)).size,
+    first.length,
+  );
+
+  const resolved = reconcileOperationalAlertLifecycle(
+    [],
+    [missingOperator],
+    "2026-07-26T11:00:00.000Z",
+  );
+  assert.equal(resolved[0].status, "resolved");
+  assert.equal(resolved[0].resolvedAt, "2026-07-26T11:00:00.000Z");
 });
 
 test("uses the exact unified analytics record selection for alerts", () => {

@@ -181,6 +181,11 @@ test("does not publish duplicate processing for an unchanged snapshot", async ()
   assert.equal(engine.state.lastChanges.changed, false);
   assert.equal(engine.state.cursor.productionRecordCount, 1);
   assert.equal(engine.state.cursor.downtimeRecordCount, 1);
+  assert.equal(engine.state.history.length, 2);
+  assert.deepEqual(
+    engine.state.history.map((entry) => entry.status),
+    ["changed", "unchanged"],
+  );
   assert.match(engine.state.cursor.lastProcessedRecordKey, /downtime|production/);
 });
 
@@ -278,4 +283,33 @@ test("bounds synchronization logs by count and retention", async () => {
         currentTime.getTime() - 60_000,
     ),
   );
+});
+
+test("bounds import history and records failed attempts safely", async () => {
+  let currentTime = new Date("2026-07-25T10:00:00.000Z");
+  let fail = false;
+  const source = {
+    kind: "excel",
+    name: "sample.xlsx",
+    async load() {
+      if (fail) {
+        throw new MmsDataSourceError("FILE_ERROR", "Workbook unavailable.");
+      }
+      return snapshot();
+    },
+  };
+  const engine = new MmsSynchronizationEngine(source, {
+    maxHistoryEntries: 2,
+    historyRetentionMs: 60_000,
+    now: () => currentTime,
+  });
+  await engine.syncNow();
+  currentTime = new Date("2026-07-25T10:00:30.000Z");
+  await engine.syncNow();
+  fail = true;
+  currentTime = new Date("2026-07-25T10:00:45.000Z");
+  await engine.syncNow();
+  assert.equal(engine.state.history.length, 2);
+  assert.equal(engine.state.history.at(-1)?.status, "failed");
+  assert.equal(engine.state.history.at(-1)?.error, "Workbook unavailable.");
 });

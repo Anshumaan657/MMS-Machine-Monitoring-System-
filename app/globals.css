@@ -2996,6 +2996,11 @@ a:focus-visible {
   opacity: 0.64;
 }
 
+.operational-alert.alert-resolved {
+  border-style: dashed;
+  opacity: 0.58;
+}
+
 .alert-record-head,
 .operational-alert footer {
   display: flex;
@@ -3133,6 +3138,17 @@ a:focus-visible {
   display: flex;
   align-items: center;
   gap: 0.55rem;
+}
+
+.alert-rule-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.alert-rule-control select {
+  min-width: 7.5rem;
 }
 
 .pending-metric > span {

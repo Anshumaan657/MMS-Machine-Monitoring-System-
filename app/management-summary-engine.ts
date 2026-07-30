@@ -27,7 +27,7 @@ export type ManagementEvidenceFact = {
 };
 
 export type VerifiedManagementEvidence = {
-  schemaVersion: "1.0";
+  schemaVersion: "1.1";
   evidenceDigest: string;
   generatedAt: string;
   scope: {
@@ -35,6 +35,11 @@ export type VerifiedManagementEvidence = {
     dateTo: string | null;
     shifts: string[];
     machines: string[];
+    products: string[];
+    operators: string[];
+    downtimeReasons: string[];
+    alertSeverities: string[];
+    dataQualityStatuses: string[];
     productionRecordCount: number;
     downtimeEventCount: number;
   };
@@ -44,6 +49,12 @@ export type VerifiedManagementEvidence = {
     calculationsAllowed: false;
     rawRecordsIncluded: false;
     evidenceReferencesRequired: true;
+  };
+  calculationPolicy: {
+    id: string;
+    version: string;
+    status: "confirmed" | "provisional" | "pending_confirmation";
+    description: string;
   };
 };
 
@@ -479,22 +490,48 @@ export function buildVerifiedManagementEvidence(
     dateTo: analytics.scope.dateTo,
     shifts: analytics.filters.shifts,
     machines: analytics.filters.machines,
+    products: analytics.filters.products ?? [],
+    operators: analytics.filters.operators ?? [],
+    downtimeReasons: analytics.filters.downtimeReasons ?? [],
+    alertSeverities: analytics.filters.alertSeverities ?? [],
+    dataQualityStatuses: analytics.filters.dataQualityStatuses ?? [],
     productionRecordCount: analytics.scope.productionRecordCount,
     downtimeEventCount: analytics.scope.downtimeEventCount,
   };
-  const digest = stableDigest({ scope, facts });
+  const calculationPolicy = {
+    id: analytics.calculationPolicy?.id ?? "mms-direct-quantity-v2",
+    version: analytics.calculationPolicy?.version ?? "2.0.0",
+    status: analytics.calculationPolicy?.status ?? "confirmed",
+    description:
+      analytics.calculationPolicy?.description ??
+      "3D-confirmed direct production-quantity policy.",
+  };
+  const pendingClaims =
+    analytics.oee.period.finalOeeReadiness === "ready" ||
+    analytics.oee.period.finalOee != null
+      ? []
+      : [
+          "Final OEE is unavailable because the selected records do not meet the verified quality-readiness gate.",
+        ];
+  const digest = stableDigest({
+    scope,
+    facts,
+    pendingClaims,
+    calculationPolicy,
+  });
   return {
-    schemaVersion: "1.0",
+    schemaVersion: "1.1",
     evidenceDigest: digest,
     generatedAt,
     scope,
     facts,
-    pendingClaims: [],
+    pendingClaims,
     policy: {
       calculationsAllowed: false,
       rawRecordsIncluded: false,
       evidenceReferencesRequired: true,
     },
+    calculationPolicy,
   };
 }
 
