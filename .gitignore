@@ -17,8 +17,9 @@ dist/
 .env.local
 .env.*.local
 
-# Local Sites configuration
-.openai/
+# Sites configuration required by clean deployment builds
+.openai/*
+!.openai/hosting.json
 .vinext/
 
 # Local Phase 12 client-data verification
