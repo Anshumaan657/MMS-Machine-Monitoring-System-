@@ -4,7 +4,7 @@ import "./globals.css";
 
 const title = "3D INTELLIGENCE™ | Industrial Analytics Command Center";
 const description =
-  "A dark-mode industrial analytics command center for machine performance, downtime, data quality, and daily operational reporting.";
+  "A secure light-and-dark industrial analytics command center for machine performance, downtime, data quality, alerts, and operational reporting.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -16,6 +16,15 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title,
     description,
+    icons: {
+      icon: "/favicon.svg",
+      shortcut: "/favicon.svg",
+    },
+    robots: {
+      index: false,
+      follow: false,
+      nocache: true,
+    },
     openGraph: {
       title,
       description,
