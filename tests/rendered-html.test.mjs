@@ -97,7 +97,10 @@ test("contains the functional dashboard, query engine, and report export", async
   assert.match(page, /Alert thresholds/);
   assert.match(page, /Supporting record/);
   assert.match(page, /Evidence-backed management summary/);
-  assert.match(page, /Generate AI narrative/);
+  assert.match(page, /Try AI narrative/);
+  assert.match(page, /Rule-based summary · verified fallback/);
+  assert.match(page, /Previous live workbook/);
+  assert.match(page, /Latest day/);
   assert.match(page, /Quality and Final OEE use the 3D-confirmed calculation/);
   assert.match(page, /3D INTELLIGENCE™/);
   assert.match(page, /THEME_STORAGE_KEY/);

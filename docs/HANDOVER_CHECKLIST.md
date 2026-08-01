@@ -49,10 +49,14 @@ release.
 - [ ] Overview layout customization/reset is demonstrated.
 - [ ] Machine detail panel is demonstrated.
 - [ ] Empty and blocked metric states are understood.
+- [ ] Previous live workbook reconnection is demonstrated in Chrome or Edge.
+- [ ] Snapshot-mode fallback is understood in other browsers.
+- [ ] Latest-day and all-history date presets are demonstrated.
 
 ## Alerts and data quality
 
 - [ ] Critical and warning meanings are explained.
+- [ ] Alert groups are distinguished from supporting record counts.
 - [ ] Default thresholds are reviewed.
 - [ ] Acknowledgement versus resolution is understood.
 - [ ] Supporting source record is traceable.
@@ -75,6 +79,7 @@ release.
 - [ ] Deterministic AI fallback is demonstrated.
 - [ ] Target deployment smoke test passes.
 - [ ] Backup and rollback procedure is recorded.
+- [ ] Protected commit-specific Shareable Link is tested and revocation is scheduled.
 - [ ] MySQL remains disabled until schema and read-only credentials are approved.
 
 ## Documentation and ownership

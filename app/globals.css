@@ -534,6 +534,16 @@ html[data-theme="light"] .advanced-filter-bar {
   text-transform: capitalize;
 }
 
+.report-quality-grid .readiness-explanation {
+  grid-column: span 2;
+  align-content: start;
+}
+
+.readiness-explanation .button {
+  justify-self: start;
+  margin-top: 0.25rem;
+}
+
 .print-report {
   display: none;
 }
@@ -3185,14 +3195,80 @@ html[data-theme="light"] .advanced-filter-bar {
   max-width: 40rem;
   margin: 0 0 1.5rem;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.92rem;
   line-height: 1.7;
 }
 
 .empty-state > small {
   margin-top: 0.7rem;
   color: var(--subtle);
-  font-size: 0.58rem;
+  font-size: 0.75rem;
+}
+
+.remembered-workbook {
+  display: flex;
+  width: min(42rem, 100%);
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 0 1rem;
+  padding: 1rem;
+  border: 0.0625rem solid rgba(99, 102, 241, 0.32);
+  border-radius: 0.85rem;
+  background: var(--panel);
+  text-align: left;
+}
+
+.remembered-workbook > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
+.remembered-workbook > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.remembered-workbook span,
+.browser-mode span {
+  color: var(--indigo-soft);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.remembered-workbook strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.88rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remembered-workbook small,
+.browser-mode small {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.browser-mode {
+  display: grid;
+  width: min(42rem, 100%);
+  gap: 0.2rem;
+  margin-top: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 0.0625rem solid var(--line);
+  border-radius: 0.7rem;
+  background: rgba(255, 255, 255, 0.025);
+  text-align: left;
+}
+
+.browser-mode.snapshot span {
+  color: var(--amber);
 }
 
 .inline-alert {
@@ -3252,6 +3328,27 @@ html[data-theme="light"] .advanced-filter-bar {
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 0.42rem;
+}
+
+.filter-date-range > .date-preset-actions {
+  display: flex;
+  grid-template-columns: none;
+  gap: 0.65rem;
+}
+
+.date-preset-actions button {
+  color: var(--muted);
+  font-size: 0.67rem;
+  font-weight: 750;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 0.2rem;
+}
+
+.date-preset-actions button:hover,
+.date-preset-actions button:focus-visible {
+  color: var(--text);
+  text-decoration-color: var(--indigo);
 }
 
 .filter-date-range i {
@@ -3318,6 +3415,22 @@ html[data-theme="light"] .advanced-filter-toggle span {
 
 .filter-result strong {
   font-size: 0.78rem;
+}
+
+.filter-result small {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.summary-mode-note {
+  margin: 0.75rem 0 0;
+  padding: 0.7rem 0.8rem;
+  border-left: 0.18rem solid var(--indigo);
+  border-radius: 0 0.5rem 0.5rem 0;
+  background: rgba(99, 102, 241, 0.07);
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.55;
 }
 
 .pending-metric {
@@ -4083,6 +4196,21 @@ html[data-theme="light"] .brief-warning {
 
   .freshness-banner {
     align-items: flex-start;
+  }
+}
+
+@media (max-width: 48rem) {
+  .remembered-workbook {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .remembered-workbook > div:last-child .button {
+    flex: 1;
+  }
+
+  .report-quality-grid .readiness-explanation {
+    grid-column: 1 / -1;
   }
 }
 

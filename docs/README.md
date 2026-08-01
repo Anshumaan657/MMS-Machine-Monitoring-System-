@@ -13,6 +13,7 @@ Intelligence MMS Analytics Module.
 4. [Excel input guide](EXCEL_INPUT_GUIDE.md)
 5. [Excel and PDF reporting](REPORTING_GUIDE.md)
 6. [Troubleshooting](TROUBLESHOOTING.md)
+7. [Presentation runbook](PRESENTATION_RUNBOOK.md)
 
 ### For developers and administrators
 

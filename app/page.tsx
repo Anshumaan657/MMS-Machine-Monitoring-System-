@@ -18,6 +18,7 @@ import {
 import {
   getMmsFilterOptions,
   queryMmsAnalytics,
+  type PolicyOeeAggregate,
 } from "./analytics-query-engine";
 import {
   createInitialMmsSyncState,
@@ -54,6 +55,14 @@ import {
   persistMmsAnalyticsFilters,
   restoreMmsAnalyticsFilters,
 } from "./analytics-filter-state";
+import {
+  clearPersistentWorkbookHandle,
+  ensureWorkbookReadPermission,
+  loadPersistentWorkbookHandle,
+  savePersistentWorkbookHandle,
+  supportsPersistentWorkbookHandles,
+  type PersistentWorkbookHandle,
+} from "./workbook-handle-storage";
 import type {
   CanonicalMmsData,
   DowntimeAggregate,
@@ -134,11 +143,6 @@ type KpiCardProps = {
   children?: ReactNode;
 };
 
-type BrowserFileHandle = {
-  name: string;
-  getFile(): Promise<File>;
-};
-
 type WorkbookPickerWindow = Window & {
   showOpenFilePicker?: (options?: {
     multiple?: boolean;
@@ -146,7 +150,7 @@ type WorkbookPickerWindow = Window & {
       description: string;
       accept: Record<string, string[]>;
     }>;
-  }) => Promise<BrowserFileHandle[]>;
+  }) => Promise<PersistentWorkbookHandle[]>;
 };
 
 type SyncNotice = {
@@ -316,6 +320,48 @@ const currencyFormat = new Intl.NumberFormat("en-IN", {
 
 function percent(value: number | null): string {
   return value == null ? "N/A" : `${numberFormat.format(value * 100)}%`;
+}
+
+function qualityDisplay(value: number | null): string {
+  return value == null ? "Not available" : percent(value);
+}
+
+function finalOeeDisplay(value: number | null): string {
+  return value == null ? "Blocked" : percent(value);
+}
+
+function oeeReadinessReason(value: PolicyOeeAggregate): string {
+  if (value.status === "blocked_provisional_policy") {
+    return "The selected calculation policy is not confirmed.";
+  }
+  if (value.status === "blocked_unreliable_data") {
+    return "One or more selected production records have blocking data-quality findings.";
+  }
+  if (value.missingQualityRecordCount > 0) {
+    return `${integerFormat.format(value.missingQualityRecordCount)} eligible records are missing reliable rejection or rework inputs.`;
+  }
+  if (value.producedQuantity <= 0) {
+    return "A positive reported production quantity is required.";
+  }
+  return value.status === "calculated"
+    ? "Calculated from confirmed policy inputs."
+    : "Availability, Performance and complete quality inputs are required.";
+}
+
+function alertPresentationGroupKey(alert: OperationalAlert): string {
+  return [
+    alert.type,
+    alert.severity,
+    alert.machine,
+    alert.shift,
+    alert.date ?? "NO_DATE",
+    alert.status,
+    alert.acknowledgementState,
+  ].join("|");
+}
+
+function alertPresentationGroupCount(alerts: OperationalAlert[]): number {
+  return new Set(alerts.map(alertPresentationGroupKey)).size;
 }
 
 function hours(seconds: number): number {
@@ -685,15 +731,23 @@ function StatusChip({ status }: { status: MachineStatus }) {
 function EmptyState({
   error,
   processing,
+  liveConnectionSupported,
+  rememberedWorkbookName,
   onThemeToggle,
   onUpload,
+  onReconnect,
+  onForgetRememberedWorkbook,
   inputRef,
   onChange,
 }: {
   error: string;
   processing: boolean;
+  liveConnectionSupported: boolean;
+  rememberedWorkbookName: string | null;
   onThemeToggle: () => void;
   onUpload: () => void;
+  onReconnect: () => void;
+  onForgetRememberedWorkbook: () => void;
   inputRef: React.RefObject<HTMLInputElement | null>;
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
@@ -713,10 +767,39 @@ function EmptyState({
       <h1>Connect your production workbook.</h1>
       <p>
         Turn verified Excel records into production, downtime, quality and
-        operational insights—all processed locally.
+        operational insights. Workbook parsing and calculations stay in this
+        browser; only bounded verified metrics are sent if you request an AI
+        narrative.
       </p>
       {error ? <div className="inline-alert">{error}</div> : null}
       {processing ? <LoadingSkeleton label="Processing MMS workbook" /> : null}
+      {rememberedWorkbookName ? (
+        <section className="remembered-workbook" aria-label="Previous workbook">
+          <div>
+            <span>Previous live workbook</span>
+            <strong>{rememberedWorkbookName}</strong>
+            <small>Permission is requested again before any file is read.</small>
+          </div>
+          <div>
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={onReconnect}
+              disabled={processing}
+            >
+              Reconnect
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={onForgetRememberedWorkbook}
+              disabled={processing}
+            >
+              Forget
+            </button>
+          </div>
+        </section>
+      ) : null}
       <button
         className="button button-primary"
         onClick={onUpload}
@@ -727,6 +810,14 @@ function EmptyState({
       <small>
         Supports .xls and .xlsx. Your source workbook is never modified.
       </small>
+      <div className={`browser-mode ${liveConnectionSupported ? "live" : "snapshot"}`}>
+        <span>{liveConnectionSupported ? "Live connection available" : "Snapshot upload mode"}</span>
+        <small>
+          {liveConnectionSupported
+            ? "Chrome or Edge can reconnect and detect workbook changes while this page remains open."
+            : "This browser can analyze uploads, but workbook changes require a manual replacement."}
+        </small>
+      </div>
       <input
         ref={inputRef}
         className="sr-only"
@@ -905,16 +996,20 @@ export default function DashboardPage() {
   const [selectedAlertSeverity, setSelectedAlertSeverity] = useState<
     OperationalAlertSeverity | "All"
   >("All");
-  const [showAcknowledgedAlerts, setShowAcknowledgedAlerts] = useState(true);
+  const [showAcknowledgedAlerts, setShowAcknowledgedAlerts] = useState(false);
   const [aiManagementSummary, setAiManagementSummary] =
     useState<ManagementSummary | null>(null);
   const [managementSummaryLoading, setManagementSummaryLoading] =
     useState(false);
   const [managementSummaryNotice, setManagementSummaryNotice] = useState("");
+  const [liveConnectionSupported, setLiveConnectionSupported] = useState(false);
+  const [rememberedWorkbook, setRememberedWorkbook] =
+    useState<PersistentWorkbookHandle | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const syncEngine = useRef<MmsSynchronizationEngine | null>(null);
   const noticeSequence = useRef(0);
   const preferencesReady = useRef(false);
+  const defaultScopeApplied = useRef(false);
 
   useEffect(() => {
     const restorePreferences = window.setTimeout(() => {
@@ -924,6 +1019,17 @@ export default function DashboardPage() {
       preferencesReady.current = true;
     }, 0);
     return () => window.clearTimeout(restorePreferences);
+  }, []);
+
+  useEffect(() => {
+    const capabilityTimer = window.setTimeout(
+      () => setLiveConnectionSupported(supportsPersistentWorkbookHandles()),
+      0,
+    );
+    void loadPersistentWorkbookHandle()
+      .then(setRememberedWorkbook)
+      .catch(() => setRememberedWorkbook(null));
+    return () => window.clearTimeout(capabilityTimer);
   }, []);
 
   useEffect(() => {
@@ -1067,6 +1173,25 @@ export default function DashboardPage() {
     const timer = window.setTimeout(() => setSyncNotice(null), 7_000);
     return () => window.clearTimeout(timer);
   }, [syncNotice]);
+
+  useEffect(() => {
+    if (!canonical || defaultScopeApplied.current) return;
+    defaultScopeApplied.current = true;
+    if (dateFrom || dateTo) return;
+    const latestDate = [
+      ...canonical.productionIntervals.map((record) => record.date),
+      ...canonical.downtimeEvents.map((record) => record.date),
+    ]
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1);
+    if (!latestDate) return;
+    const scopeTimer = window.setTimeout(() => {
+      setDateFrom(latestDate);
+      setDateTo(latestDate);
+    }, 0);
+    return () => window.clearTimeout(scopeTimer);
+  }, [canonical, dateFrom, dateTo]);
 
   const filterOptions = useMemo(
     () => (canonical ? getMmsFilterOptions(canonical) : null),
@@ -1325,6 +1450,12 @@ export default function DashboardPage() {
         ],
       });
       if (!handle) return;
+      const selectedFile = await handle.getFile();
+      validateMmsWorkbookUpload(selectedFile.name, selectedFile.size);
+      setRememberedWorkbook(handle);
+      void savePersistentWorkbookHandle(handle).catch(() => {
+        // The live connection remains usable even when the browser cannot persist it.
+      });
       const source = new ExcelMmsDataSource(handle.name, async () => {
         const currentFile = await handle.getFile();
         return currentFile.arrayBuffer();
@@ -1340,6 +1471,42 @@ export default function DashboardPage() {
     }
   }
 
+  async function reconnectWorkbook(): Promise<void> {
+    if (!rememberedWorkbook) return;
+    setLoadError("");
+    try {
+      const permitted = await ensureWorkbookReadPermission(rememberedWorkbook);
+      if (!permitted) {
+        setLoadError(
+          "Workbook access was not granted. Choose Connect workbook to select it again.",
+        );
+        return;
+      }
+      const selectedFile = await rememberedWorkbook.getFile();
+      validateMmsWorkbookUpload(selectedFile.name, selectedFile.size);
+      startSynchronization(
+        new ExcelMmsDataSource(rememberedWorkbook.name, async () => {
+          const currentFile = await rememberedWorkbook.getFile();
+          return currentFile.arrayBuffer();
+        }),
+        "live-file",
+      );
+    } catch (error) {
+      setLoadError(
+        error instanceof Error
+          ? error.message
+          : "The previous workbook could not be reconnected.",
+      );
+    }
+  }
+
+  function forgetRememberedWorkbook(): void {
+    setRememberedWorkbook(null);
+    void clearPersistentWorkbookHandle().catch(() => {
+      // The in-memory reference has already been removed.
+    });
+  }
+
   function handleUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -1352,6 +1519,10 @@ export default function DashboardPage() {
       event.target.value = "";
       return;
     }
+    setRememberedWorkbook(null);
+    void clearPersistentWorkbookHandle().catch(() => {
+      // Snapshot upload remains available when local handle storage is unavailable.
+    });
     startSynchronization(
       new ExcelMmsDataSource(file.name, () => file.arrayBuffer()),
       "uploaded-snapshot",
@@ -1368,6 +1539,18 @@ export default function DashboardPage() {
     setSelectedOperators([]);
     setSelectedDowntimeReasons([]);
     setSelectedDataQualityStatuses([]);
+  }
+
+  function applyLatestAvailableDay(): void {
+    const latestDate = filterOptions?.dates.at(-1);
+    if (!latestDate) return;
+    setDateFrom(latestDate);
+    setDateTo(latestDate);
+  }
+
+  function showAllHistory(): void {
+    setDateFrom("");
+    setDateTo("");
   }
 
   function acknowledgeAlerts(alerts: OperationalAlert[]): void {
@@ -1497,10 +1680,14 @@ export default function DashboardPage() {
       <EmptyState
         error={loadError}
         processing={processing}
+        liveConnectionSupported={liveConnectionSupported}
+        rememberedWorkbookName={rememberedWorkbook?.name ?? null}
         onThemeToggle={() =>
           setTheme((current) => (current === "dark" ? "light" : "dark"))
         }
         onUpload={() => void connectWorkbook()}
+        onReconnect={() => void reconnectWorkbook()}
+        onForgetRememberedWorkbook={forgetRememberedWorkbook}
         inputRef={fileInput}
         onChange={handleUpload}
       />
@@ -1530,6 +1717,21 @@ export default function DashboardPage() {
       alert.status === "active" &&
       alert.acknowledgementState === "unacknowledged",
   ).length;
+  const unacknowledgedAlertGroupCount = alertPresentationGroupCount(
+    scopedOperationalAlerts.filter(
+      (alert) =>
+        alert.status === "active" &&
+        alert.acknowledgementState === "unacknowledged",
+    ),
+  );
+  const criticalAlertGroupCount = alertPresentationGroupCount(
+    scopedOperationalAlerts.filter(
+      (alert) =>
+        alert.severity === "critical" &&
+        alert.status === "active" &&
+        alert.acknowledgementState === "unacknowledged",
+    ),
+  );
   const activeLabel =
     NAVIGATION.find((item) => item.id === activeTab)?.label ?? "Overview";
   const activeSecondaryFilterCount =
@@ -1592,14 +1794,14 @@ export default function DashboardPage() {
             />
             <KpiCard
               label="Quality"
-              value={percent(analytics.oee.period.quality)}
-              detail="(Reported − rejected − rework) ÷ reported"
+              value={qualityDisplay(analytics.oee.period.quality)}
+              detail={oeeReadinessReason(analytics.oee.period)}
               tone="amber"
             />
             <KpiCard
               label="Final OEE"
-              value={percent(analytics.oee.period.finalOee)}
-              detail="Availability × Performance × Quality"
+              value={finalOeeDisplay(analytics.oee.period.finalOee)}
+              detail={oeeReadinessReason(analytics.oee.period)}
               tone="rose"
             >
               <MetricStatus
@@ -1775,8 +1977,8 @@ export default function DashboardPage() {
                 <div>
                   <strong>Operational alerts</strong>
                   <small>
-                    {unacknowledgedAlertCount} unacknowledged ·{" "}
-                    {criticalAlertCount} critical
+                    {unacknowledgedAlertGroupCount} active groups ·{" "}
+                    {integerFormat.format(unacknowledgedAlertCount)} supporting records
                   </small>
                 </div>
                 <i>→</i>
@@ -2010,15 +2212,15 @@ export default function DashboardPage() {
 
         <section className="kpi-grid alert-kpi-grid">
           <KpiCard
-            label="Unacknowledged"
-            value={integerFormat.format(unacknowledgedAlertCount)}
-            detail="Active alerts awaiting review"
+            label="Active groups"
+            value={integerFormat.format(unacknowledgedAlertGroupCount)}
+            detail={`${integerFormat.format(unacknowledgedAlertCount)} supporting records awaiting review`}
             tone="rose"
           />
           <KpiCard
-            label="Critical"
-            value={integerFormat.format(criticalAlertCount)}
-            detail="Unacknowledged critical conditions"
+            label="Critical groups"
+            value={integerFormat.format(criticalAlertGroupCount)}
+            detail={`${integerFormat.format(criticalAlertCount)} critical supporting records`}
             tone="amber"
           />
           <KpiCard
@@ -2084,20 +2286,26 @@ export default function DashboardPage() {
             <span>Show acknowledged alerts</span>
           </label>
           <div className="filter-result">
-            <span>Displaying</span>
+            <span>Supporting records</span>
             <strong>
               {integerFormat.format(
                 Math.min(visibleOperationalAlerts.length, 200),
               )}{" "}
               of {integerFormat.format(visibleOperationalAlerts.length)}
             </strong>
+            <small>
+              {integerFormat.format(
+                alertPresentationGroupCount(visibleOperationalAlerts),
+              )}{" "}
+              grouped conditions
+            </small>
           </div>
         </section>
 
         <div className="alert-layout">
           <Panel
             eyebrow="Active conditions"
-            title="Supporting operational records"
+            title="Evidence records behind each alert group"
           >
             {displayedAlerts.length ? (
               <div className="operational-alert-list">
@@ -2796,13 +3004,21 @@ export default function DashboardPage() {
             <div className="pending-row">
               <div className="pending-metric">
                 <span>Quality</span>
-                <strong>{percent(selectedMachineView.quality)}</strong>
-                <small>3D-confirmed direct-quantity policy</small>
+                <strong>{qualityDisplay(selectedMachineView.quality)}</strong>
+                <small>
+                  {selectedMachineView.quality == null
+                    ? "Review rejection, rework and data-quality findings"
+                    : "3D-confirmed direct-quantity policy"}
+                </small>
               </div>
               <div className="pending-metric">
                 <span>Final OEE</span>
-                <strong>{percent(selectedMachineView.finalOee)}</strong>
-                <small>Availability × Performance × Quality</small>
+                <strong>{finalOeeDisplay(selectedMachineView.finalOee)}</strong>
+                <small>
+                  {selectedMachineView.finalOee == null
+                    ? "Requires reliable Availability, Performance and Quality"
+                    : "Availability × Performance × Quality"}
+                </small>
               </div>
             </div>
             </SidePanel>
@@ -2918,10 +3134,10 @@ export default function DashboardPage() {
                         Performance <strong>{percent(oee?.performance ?? null)}</strong>
                       </span>
                       <span>
-                        Quality <strong>{percent(policyOee?.quality ?? null)}</strong>
+                        Quality <strong>{qualityDisplay(policyOee?.quality ?? null)}</strong>
                       </span>
                       <span>
-                        Final OEE <strong>{percent(policyOee?.finalOee ?? null)}</strong>
+                        Final OEE <strong>{finalOeeDisplay(policyOee?.finalOee ?? null)}</strong>
                       </span>
                       <span>
                         Downtime{" "}
@@ -2948,7 +3164,7 @@ export default function DashboardPage() {
                 disabled={managementSummaryLoading}
                 onClick={() => void requestAiManagementSummary()}
               >
-                {managementSummaryLoading ? "Validating…" : "Generate AI narrative"}
+                {managementSummaryLoading ? "Validating…" : "Try AI narrative"}
               </button>
             }
           >
@@ -2960,8 +3176,8 @@ export default function DashboardPage() {
                     className={`summary-source ${managementSummary.source}`}
                   >
                     {managementSummary.source === "ai"
-                      ? `AI · ${managementSummary.model}`
-                      : "Verified deterministic"}
+                      ? `AI summary · verified · ${managementSummary.model}`
+                      : "Rule-based summary · verified fallback"}
                   </span>
                 </div>
                 <h3>{managementSummary.title}</h3>
@@ -3019,6 +3235,11 @@ export default function DashboardPage() {
                     exact values come only from verified analytics evidence.
                   </span>
                 </div>
+                <p className="summary-mode-note">
+                  The rule-based summary is always available. External AI is
+                  optional and receives only bounded verified metrics—never the
+                  source workbook or permission to calculate new figures.
+                </p>
                 {managementSummaryNotice ? (
                   <p className="summary-notice" role="status">
                     {managementSummaryNotice}
@@ -3077,6 +3298,19 @@ export default function DashboardPage() {
             <article>
               <span>Final OEE readiness</span>
               <strong>{analytics.oee.period.finalOeeReadiness}</strong>
+            </article>
+            <article className="readiness-explanation">
+              <span>Readiness explanation</span>
+              <strong>{oeeReadinessReason(analytics.oee.period)}</strong>
+              {analytics.oee.period.finalOeeReadiness === "blocked" ? (
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => setActiveTab("data-quality")}
+                >
+                  View affected records
+                </button>
+              ) : null}
             </article>
           </div>
         </Panel>
@@ -3173,11 +3407,11 @@ export default function DashboardPage() {
             <button
               className="topbar-alert-count"
               onClick={() => setActiveTab("alerts")}
-              aria-label={`${unacknowledgedAlertCount} unacknowledged operational alerts`}
+              aria-label={`${unacknowledgedAlertGroupCount} active operational alert groups with ${unacknowledgedAlertCount} supporting records`}
             >
               <span>!</span>
-              <strong>{integerFormat.format(unacknowledgedAlertCount)}</strong>
-              <small>alerts</small>
+              <strong>{integerFormat.format(unacknowledgedAlertGroupCount)}</strong>
+              <small>groups</small>
             </button>
             <div className={`dataset-health sync-${syncState.status}`}>
               <i />
@@ -3325,6 +3559,14 @@ export default function DashboardPage() {
                   aria-label="Date to"
                 />
               </label>
+            </div>
+            <div className="date-preset-actions">
+              <button type="button" onClick={applyLatestAvailableDay}>
+                Latest day
+              </button>
+              <button type="button" onClick={showAllHistory}>
+                All history
+              </button>
             </div>
           </div>
           <label>

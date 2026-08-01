@@ -44,7 +44,7 @@ npm run build:vercel
 npm run smoke:deployment
 ```
 
-The current automated suite contains 124 passing tests. Formal 3D acceptance
+The current automated suite contains 128 passing tests. Formal 3D acceptance
 still requires the private representative side-by-side cases described in
 [`verification/PHASE_29_CONFIRMATION.md`](verification/PHASE_29_CONFIRMATION.md).
 
